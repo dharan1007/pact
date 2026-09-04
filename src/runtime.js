@@ -253,3 +253,278 @@ export function createPactRuntime(options = {}) {
 
   return { startIntent, preview, approve, commit, verify, rollback, cancel, inspect };
 }
+
+function validateExternalIntegration(integration) {
+  if (!integration || typeof integration !== 'object' || Array.isArray(integration)) fail('PACT_EXTERNAL_INTEGRATION_REQUIRED');
+  if (typeof integration.id !== 'string' || !integration.id.trim()) fail('PACT_EXTERNAL_INTEGRATION_ID_REQUIRED');
+  if (typeof integration.version !== 'string' || !integration.version.trim()) fail('PACT_EXTERNAL_INTEGRATION_VERSION_REQUIRED');
+  for (const method of ['read', 'plan', 'apply', 'verify']) {
+    if (typeof integration[method] !== 'function') fail(`PACT_EXTERNAL_INTEGRATION_METHOD_REQUIRED:${method}`);
+  }
+  return integration;
+}
+
+function validateExternalSnapshot(snapshot) {
+  if (!isPlainObject(snapshot)) fail('PACT_EXTERNAL_INVALID_SNAPSHOT');
+  if (typeof snapshot.revision !== 'string' || !snapshot.revision.trim()) fail('PACT_EXTERNAL_REVISION_REQUIRED');
+  if (!isPlainObject(snapshot.state)) fail('PACT_EXTERNAL_STATE_REQUIRED');
+  assertJson(snapshot.state, 'PACT_EXTERNAL_STATE_MUST_BE_JSON');
+  return { revision: snapshot.revision, state: clone(snapshot.state) };
+}
+
+function assertExternalStateMatchesPlan(state, plan, phase) {
+  for (const effect of plan.effects) {
+    const expected = phase === 'before' ? effect.before : effect.after;
+    if (!same(getPath(state, effect.path), expected)) {
+      fail(phase === 'before' ? `PACT_EXTERNAL_PRECONDITION_FAILED:${effect.path}` : `PACT_EXTERNAL_POSTCONDITION_FAILED:${effect.path}`);
+    }
+  }
+  for (const invariant of plan.invariants) {
+    if (!same(getPath(state, invariant.path), invariant.equals)) fail(`PACT_EXTERNAL_INVARIANT_FAILED:${invariant.path}`);
+  }
+}
+
+function externalPlanPayload(tx) {
+  return {
+    txId: tx.id,
+    integration: tx.integration,
+    intent: tx.intent,
+    baseRevision: tx.baseRevision,
+    effects: tx.effects,
+    invariants: tx.invariants,
+    metadata: tx.metadata
+  };
+}
+
+export function createPactExternalRuntime(options = {}) {
+  const integration = validateExternalIntegration(options.integration);
+  const verifyApproval = options.verifyApproval;
+  const now = options.now ?? (() => Date.now());
+  const leaseMs = options.leaseMs ?? 120_000;
+  if (!Number.isFinite(leaseMs) || leaseMs <= 0) fail('PACT_EXTERNAL_INVALID_LEASE');
+
+  let transaction = null;
+  let lease = null;
+  const audit = [];
+
+  async function appendAudit(type, data = {}) {
+    const prevHash = audit.at(-1)?.hash ?? 'GENESIS';
+    const body = { index: audit.length, at: now(), type, data, prevHash };
+    audit.push({ ...body, hash: await sha256Hex(body) });
+  }
+
+  function assertSignal(signal) {
+    if (signal?.aborted) throw new Error('PACT_EXTERNAL_ABORTED', { cause: signal.reason });
+  }
+
+  async function readRemote(signal) {
+    assertSignal(signal);
+    const snapshot = validateExternalSnapshot(await integration.read({
+      intent: clone(transaction?.intent),
+      transaction: transaction ? { id: transaction.id, state: transaction.state } : null,
+      signal
+    }));
+    assertSignal(signal);
+    return snapshot;
+  }
+
+  async function assertPlanIntegrity() {
+    if (!transaction?.planHash) fail('PACT_EXTERNAL_PLAN_REQUIRED');
+    if (await sha256Hex(externalPlanPayload(transaction)) !== transaction.planHash) fail('PACT_EXTERNAL_PLAN_TAMPERED');
+  }
+
+  async function assertApprovalIntegrity() {
+    if (!transaction?.approvalClaims || !transaction?.approvalClaimsHash) fail('PACT_EXTERNAL_APPROVAL_REQUIRED');
+    if (await sha256Hex(transaction.approvalClaims) !== transaction.approvalClaimsHash) fail('PACT_EXTERNAL_APPROVAL_TAMPERED');
+  }
+
+  function startIntent(intent) {
+    if (transaction && !['CANCELLED', 'VERIFIED'].includes(transaction.state)) fail('PACT_EXTERNAL_ACTIVE_TRANSACTION');
+    assertJson(intent, 'PACT_EXTERNAL_INTENT_MUST_BE_JSON');
+    transaction = {
+      id: `tx_${globalThis.crypto.randomUUID()}`,
+      state: 'DRAFT',
+      integration: { id: integration.id, version: integration.version },
+      intent: clone(intent),
+      createdAt: now()
+    };
+    lease = null;
+    return clone(transaction);
+  }
+
+  async function preview({ signal } = {}) {
+    if (transaction?.state !== 'DRAFT') fail('PACT_EXTERNAL_NOT_PREVIEWABLE');
+    const snapshot = await readRemote(signal);
+    const plan = validateAdapterPlan(await integration.plan({
+      intent: clone(transaction.intent),
+      state: clone(snapshot.state),
+      revision: snapshot.revision,
+      transaction: { id: transaction.id, state: transaction.state },
+      signal
+    }));
+    assertSignal(signal);
+    assertExternalStateMatchesPlan(snapshot.state, plan, 'before');
+    transaction = {
+      ...transaction,
+      state: 'PREVIEWED',
+      baseRevision: snapshot.revision,
+      effects: plan.effects,
+      invariants: plan.invariants,
+      metadata: plan.metadata,
+      previewedAt: now()
+    };
+    transaction.planHash = await sha256Hex(externalPlanPayload(transaction));
+    await appendAudit('EXTERNAL_PREVIEWED', { txId: transaction.id, baseRevision: transaction.baseRevision, planHash: transaction.planHash });
+    return clone(transaction);
+  }
+
+  async function approve({ approval } = {}) {
+    if (transaction?.state !== 'PREVIEWED') fail('PACT_EXTERNAL_NOT_PREVIEWED');
+    await assertPlanIntegrity();
+    if (typeof verifyApproval !== 'function') fail('PACT_EXTERNAL_APPROVAL_VERIFIER_REQUIRED');
+    const verified = await verifyApproval({
+      approval: clone(approval),
+      txId: transaction.id,
+      planHash: transaction.planHash,
+      integration: clone(transaction.integration),
+      intent: clone(transaction.intent),
+      baseRevision: transaction.baseRevision,
+      effects: clone(transaction.effects),
+      invariants: clone(transaction.invariants)
+    });
+    if (!verified) fail('PACT_EXTERNAL_APPROVAL_REJECTED');
+    const approvalClaims = validateApprovalClaims(verified);
+    const approvalClaimsHash = await sha256Hex(approvalClaims);
+    lease = {
+      txId: transaction.id,
+      planHash: transaction.planHash,
+      approvalClaimsHash,
+      issuedAt: now(),
+      expiresAt: now() + leaseMs
+    };
+    transaction = { ...transaction, state: 'APPROVED', approvalClaims, approvalClaimsHash, approvedAt: now() };
+    await appendAudit('EXTERNAL_APPROVED', { txId: transaction.id, approvalClaimsHash, expiresAt: lease.expiresAt });
+    return clone(transaction);
+  }
+
+  async function commit({ idempotencyKey, signal } = {}) {
+    if (!transaction) fail('PACT_EXTERNAL_NO_TRANSACTION');
+    const key = typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
+    if (!key) fail('PACT_EXTERNAL_IDEMPOTENCY_KEY_REQUIRED');
+    if (key.length > 256) fail('PACT_EXTERNAL_INVALID_IDEMPOTENCY_KEY');
+    if (transaction.state === 'COMMITTED' || transaction.state === 'VERIFIED') {
+      if (transaction.idempotencyKeyHash !== await sha256Hex(key)) fail('PACT_EXTERNAL_IDEMPOTENCY_KEY_MISMATCH');
+      return clone(transaction);
+    }
+    if (transaction.state !== 'APPROVED') fail('PACT_EXTERNAL_NOT_APPROVED');
+    await assertPlanIntegrity();
+    await assertApprovalIntegrity();
+    if (!lease || lease.txId !== transaction.id || lease.planHash !== transaction.planHash || lease.approvalClaimsHash !== transaction.approvalClaimsHash || now() > lease.expiresAt) {
+      fail('PACT_EXTERNAL_INVALID_OR_EXPIRED_LEASE');
+    }
+    const current = await readRemote(signal);
+    if (current.revision !== transaction.baseRevision) fail('PACT_EXTERNAL_STALE_REMOTE_STATE');
+    const plan = { effects: clone(transaction.effects), invariants: clone(transaction.invariants), metadata: clone(transaction.metadata) };
+    assertExternalStateMatchesPlan(current.state, plan, 'before');
+    const idempotencyKeyHash = await sha256Hex(key);
+    try {
+      const applicationResult = await integration.apply({
+        intent: clone(transaction.intent),
+        state: clone(current.state),
+        revision: current.revision,
+        plan: clone(plan),
+        approvalClaims: clone(transaction.approvalClaims),
+        transaction: { id: transaction.id, planHash: transaction.planHash, baseRevision: transaction.baseRevision },
+        idempotencyKey: key,
+        signal
+      });
+      assertSignal(signal);
+      const normalizedResult = applicationResult === undefined ? null : applicationResult;
+      assertJson(normalizedResult, 'PACT_EXTERNAL_APPLY_RESULT_MUST_BE_JSON');
+      const applicationResultHash = await sha256Hex(normalizedResult);
+      transaction = {
+        ...transaction,
+        state: 'COMMITTED',
+        idempotencyKeyHash,
+        applicationResult: clone(normalizedResult),
+        applicationResultHash,
+        committedAt: now()
+      };
+      lease = null;
+      await appendAudit('EXTERNAL_COMMITTED', { txId: transaction.id, idempotencyKeyHash, applicationResultHash });
+      return clone(transaction);
+    } catch (cause) {
+      transaction = { ...transaction, state: 'COMMIT_UNCERTAIN', idempotencyKeyHash, commitAttemptedAt: now() };
+      lease = null;
+      await appendAudit('EXTERNAL_COMMIT_UNCERTAIN', { txId: transaction.id, idempotencyKeyHash });
+      throw new Error('PACT_EXTERNAL_COMMIT_UNCERTAIN', { cause });
+    }
+  }
+
+  async function verify({ signal } = {}) {
+    if (!transaction) fail('PACT_EXTERNAL_NO_TRANSACTION');
+    if (transaction.state === 'VERIFIED') return clone(transaction.receipt);
+    if (!['COMMITTED', 'COMMIT_UNCERTAIN'].includes(transaction.state)) fail('PACT_EXTERNAL_NOT_COMMITTED');
+    await assertPlanIntegrity();
+    await assertApprovalIntegrity();
+    const priorState = transaction.state;
+    const current = await readRemote(signal);
+    const plan = { effects: clone(transaction.effects), invariants: clone(transaction.invariants), metadata: clone(transaction.metadata) };
+    assertExternalStateMatchesPlan(current.state, plan, 'after');
+    const integrationVerified = await integration.verify({
+      intent: clone(transaction.intent),
+      state: clone(current.state),
+      revision: current.revision,
+      plan: clone(plan),
+      applicationResult: clone(transaction.applicationResult),
+      approvalClaims: clone(transaction.approvalClaims),
+      transaction: { id: transaction.id, planHash: transaction.planHash, baseRevision: transaction.baseRevision },
+      signal
+    });
+    assertSignal(signal);
+    if (integrationVerified !== true) fail('PACT_EXTERNAL_INTEGRATION_VERIFICATION_FAILED');
+    const body = {
+      txId: transaction.id,
+      integration: clone(transaction.integration),
+      planHash: transaction.planHash,
+      approvalClaims: clone(transaction.approvalClaims),
+      approvalClaimsHash: transaction.approvalClaimsHash,
+      baseRevision: transaction.baseRevision,
+      verifiedRevision: current.revision,
+      effects: clone(transaction.effects),
+      invariants: clone(transaction.invariants),
+      idempotencyKeyHash: transaction.idempotencyKeyHash,
+      applicationResultHash: transaction.applicationResultHash ?? null,
+      recoveredFromUncertainCommit: priorState === 'COMMIT_UNCERTAIN',
+      verifiedAt: now()
+    };
+    const receipt = { ...body, receiptHash: await sha256Hex(body) };
+    transaction = { ...transaction, state: 'VERIFIED', receipt };
+    await appendAudit('EXTERNAL_RECEIPT', { txId: transaction.id, receiptHash: receipt.receiptHash, verifiedRevision: current.revision });
+    return clone(receipt);
+  }
+
+  function getReceipt() {
+    if (transaction?.state !== 'VERIFIED' || !transaction.receipt) fail('PACT_EXTERNAL_RECEIPT_NOT_AVAILABLE');
+    return clone(transaction.receipt);
+  }
+
+  function cancel() {
+    if (!transaction) fail('PACT_EXTERNAL_NO_TRANSACTION');
+    if (['COMMITTED', 'COMMIT_UNCERTAIN', 'VERIFIED'].includes(transaction.state)) fail('PACT_EXTERNAL_TOO_LATE_TO_CANCEL');
+    transaction = { ...transaction, state: 'CANCELLED', cancelledAt: now() };
+    lease = null;
+    return clone(transaction);
+  }
+
+  function inspect() {
+    return {
+      integration: { id: integration.id, version: integration.version },
+      transaction: clone(transaction),
+      lease: clone(lease),
+      audit: clone(audit)
+    };
+  }
+
+  return { startIntent, preview, approve, commit, verify, getReceipt, cancel, inspect };
+}
