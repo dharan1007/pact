@@ -45,6 +45,49 @@ function makeService() {
   return { service, canonical, writes };
 }
 
+function makeRecoverableHarness() {
+  const canonical = { version: 4, tenant: { id: 'acme' }, flags: { beta: false } };
+  const store = new MemoryAuthorityStore();
+  const committedByAuthorization = new Map();
+  let physicalWrites = 0;
+  let crashAfterFirstWrite = false;
+
+  const readCanonical = async () => structuredClone(canonical);
+  const commitCanonical = async ({ expectedVersion, nextState, authorization, idempotencyKey }) => {
+    assert.equal(idempotencyKey, authorization.authorizationId);
+    const previous = committedByAuthorization.get(idempotencyKey);
+    if (previous) return structuredClone(previous);
+    if (canonical.version !== expectedVersion) throw new Error('PACT_API_STALE_CANONICAL_STATE');
+
+    Object.keys(canonical).forEach(key => delete canonical[key]);
+    Object.assign(canonical, structuredClone(nextState));
+    physicalWrites += 1;
+    committedByAuthorization.set(idempotencyKey, structuredClone(canonical));
+
+    if (crashAfterFirstWrite) {
+      crashAfterFirstWrite = false;
+      throw new Error('SIMULATED_CRASH_AFTER_CANONICAL_WRITE');
+    }
+    return structuredClone(canonical);
+  };
+
+  const createService = () => createPactApiAuthorityService({
+    store,
+    verifyApproval: verifier,
+    adapters: [adapter],
+    readCanonical,
+    commitCanonical,
+    now: () => 10_000
+  });
+
+  return {
+    canonical,
+    createService,
+    get physicalWrites() { return physicalWrites; },
+    crashOnNextWrite() { crashAfterFirstWrite = true; }
+  };
+}
+
 test('canonical API binds preview, signed approval and single-use commit authority', async () => {
   const { service, canonical, writes } = makeService();
   const preview = await service.preview({
@@ -115,4 +158,68 @@ test('canonical API rejects unknown adapters, invalid approvals and mismatched c
     intent: { key: 'beta', value: true }
   });
   await assert.rejects(() => service.approve({ transactionId: preview.transaction.id, approval: 'bad' }), /PACT_AUTHORITY_APPROVAL_REJECTED/);
+});
+
+test('canonical API recovers after a crash occurring after canonical write but before journal completion', async () => {
+  const harness = makeRecoverableHarness();
+  const firstService = harness.createService();
+  const preview = await firstService.preview({
+    adapter: { id: 'example.flags', version: '1.0.0' },
+    intent: { key: 'beta', value: true }
+  });
+  const approved = await firstService.approve({ transactionId: preview.transaction.id, approval: 'signed-ok' });
+
+  harness.crashOnNextWrite();
+  await assert.rejects(() => firstService.commit({
+    transactionId: preview.transaction.id,
+    capabilityToken: approved.capability.token,
+    idempotencyKey: 'crash-recovery-1'
+  }), /SIMULATED_CRASH_AFTER_CANONICAL_WRITE/);
+
+  assert.equal(harness.canonical.version, 5);
+  assert.equal(harness.canonical.flags.beta, true);
+  assert.equal(harness.physicalWrites, 1);
+  assert.equal((await firstService.inspect({ transactionId: preview.transaction.id })).transaction.state, 'COMMIT_AUTHORIZED');
+
+  const restartedService = harness.createService();
+  const recovered = await restartedService.commit({
+    transactionId: preview.transaction.id,
+    capabilityToken: approved.capability.token,
+    idempotencyKey: 'crash-recovery-1'
+  });
+
+  assert.equal(recovered.transaction.state, 'COMMITTED');
+  assert.equal(recovered.transaction.commitVersion, 5);
+  assert.equal(harness.physicalWrites, 1);
+  assert.equal((await restartedService.inspect({ transactionId: preview.transaction.id })).transaction.state, 'COMMITTED');
+});
+
+test('concurrent retries with the same commit key converge to one canonical write', async () => {
+  const harness = makeRecoverableHarness();
+  const serviceA = harness.createService();
+  const serviceB = harness.createService();
+  const preview = await serviceA.preview({
+    adapter: { id: 'example.flags', version: '1.0.0' },
+    intent: { key: 'beta', value: true }
+  });
+  const approved = await serviceA.approve({ transactionId: preview.transaction.id, approval: 'signed-ok' });
+
+  const [left, right] = await Promise.all([
+    serviceA.commit({
+      transactionId: preview.transaction.id,
+      capabilityToken: approved.capability.token,
+      idempotencyKey: 'race-same-key'
+    }),
+    serviceB.commit({
+      transactionId: preview.transaction.id,
+      capabilityToken: approved.capability.token,
+      idempotencyKey: 'race-same-key'
+    })
+  ]);
+
+  assert.equal(left.transaction.state, 'COMMITTED');
+  assert.equal(right.transaction.state, 'COMMITTED');
+  assert.equal(left.transaction.commitVersion, 5);
+  assert.equal(right.transaction.commitVersion, 5);
+  assert.equal(harness.physicalWrites, 1);
 });
