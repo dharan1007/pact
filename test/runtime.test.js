@@ -3,27 +3,28 @@ import assert from 'node:assert/strict';
 import { definePactAdapter } from '../src/adapter.js';
 import { createPactRuntime } from '../src/runtime.js';
 
-test('generic runtime previews adapter-produced effects instead of reference-domain effects', async () => {
-  const adapter = definePactAdapter({
+function makeFlagsAdapter() {
+  return definePactAdapter({
     id: 'example.flags',
     version: '1.0.0',
     describe() { return { name: 'Flags' }; },
     async plan({ intent, state }) {
-      assert.equal(intent.flag, 'beta');
-      assert.equal(state.flags.beta, false);
       return {
-        effects: [{ path: 'flags.beta', before: false, after: true }],
-        invariants: [{ path: 'billing.plan', equals: 'free' }]
+        effects: [{ path: `flags.${intent.flag}`, before: state.flags[intent.flag], after: true }],
+        invariants: [{ path: 'billing.plan', equals: state.billing.plan }]
       };
     },
     async verify({ intent, state, plan }) {
-      return intent.flag === 'beta' && state.flags.beta === true && plan.effects.length === 1;
+      return state.flags[intent.flag] === true && plan.effects.length === 1;
     }
   });
+}
 
+test('generic runtime previews adapter-produced effects instead of reference-domain effects', async () => {
   const runtime = createPactRuntime({
-    adapter,
-    initialState: { version: 7, flags: { beta: false }, billing: { plan: 'free' } }
+    adapter: makeFlagsAdapter(),
+    initialState: { version: 7, flags: { beta: false }, billing: { plan: 'free' } },
+    verifyApproval: async () => ({ humanPrincipal: 'user_1', agentSession: 'agent_1' })
   });
 
   const draft = runtime.startIntent({ flag: 'beta' });
@@ -34,4 +35,30 @@ test('generic runtime previews adapter-produced effects instead of reference-dom
   assert.equal(preview.baseVersion, 7);
   assert.deepEqual(preview.effects, [{ path: 'flags.beta', before: false, after: true }]);
   assert.deepEqual(preview.invariants, [{ path: 'billing.plan', equals: 'free' }]);
+});
+
+test('approval is accepted only through an authority verifier and identity claims are bound into the transaction and receipt', async () => {
+  const observed = [];
+  const runtime = createPactRuntime({
+    adapter: makeFlagsAdapter(),
+    initialState: { version: 3, flags: { beta: false }, billing: { plan: 'free' } },
+    verifyApproval: async request => {
+      observed.push(request);
+      if (request.approval !== 'signed-approval') return false;
+      return { humanPrincipal: 'human:maya', agentSession: 'agent:chatgpt:7' };
+    }
+  });
+
+  runtime.startIntent({ flag: 'beta' });
+  const preview = await runtime.preview();
+
+  await assert.rejects(() => runtime.approve({ trusted: true }), /PACT_RUNTIME_APPROVAL_REJECTED/);
+  const approved = await runtime.approve({ approval: 'signed-approval' });
+  assert.deepEqual(approved.approvalClaims, { humanPrincipal: 'human:maya', agentSession: 'agent:chatgpt:7' });
+  assert.equal(observed.at(-1).txId, preview.id);
+  assert.equal(observed.at(-1).planHash, preview.planHash);
+
+  await runtime.commit();
+  const receipt = await runtime.verify();
+  assert.deepEqual(receipt.approvalClaims, { humanPrincipal: 'human:maya', agentSession: 'agent:chatgpt:7' });
 });
