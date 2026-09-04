@@ -8,7 +8,7 @@ const pages = [
   ['pages/workspace.html','Transaction workspace'],
   ['pages/how-it-works.html','How PACT works'],
   ['pages/security.html','Trust without blind access'],
-  ['pages/developers.html','WebMCP developer surface']
+  ['pages/developers.html','Use PACT as a runtime, not a demo.']
 ];
 const nav = ['Overview','Live Demo','Workspace','How It Works','Security','Developers'];
 
@@ -25,11 +25,22 @@ test('overview links to every primary route', async () => {
   for (const href of ['/demo/','/workspace/','/how-it-works/','/security/','/developers/']) assert.match(html, new RegExp(`href="${href}"`));
 });
 
-test('developers page documents the autopilot-first WebMCP surface', async () => {
+test('developers page documents the reusable SDK, authority boundary and current WebMCP host', async () => {
   const html = await readFile('pages/developers.html','utf8');
-  assert.match(html, /pact_autopilot_prepare/);
-  assert.match(html, /pact_autopilot_finish/);
-  assert.match(html, /trusted human approval/i);
+  assert.match(html, /\/sdk\/adapter\.js/);
+  assert.match(html, /\/sdk\/runtime\.js/);
+  assert.match(html, /verifyApproval/);
+  assert.match(html, /humanPrincipal/);
+  assert.match(html, /agentSession/);
+  assert.match(html, /document\.modelContext/);
+  assert.match(html, /pact-manifest\.json/);
+});
+
+test('developers page documents HTTP idempotency and durable-authority limitation without claiming the static deployment provides it', async () => {
+  const html = await readFile('pages/developers.html','utf8');
+  assert.match(html, /idempotency key/i);
+  assert.match(html, /persist transaction state, replay protection and idempotency records durably/i);
+  assert.match(html, /static reference deployment does not provide that guarantee yet/i);
 });
 
 test('guided demo explicitly supports durable committed-state recovery', async () => {
@@ -47,11 +58,6 @@ test('workspace explains committed recovery instead of stranding the user', asyn
   const js = await readFile('src/main.js','utf8');
   assert.match(js, /recovery-status/);
   assert.match(js, /COMMITTED/);
-});
-
-test('developer documentation includes the committed recovery capability', async () => {
-  const html = await readFile('pages/developers.html','utf8');
-  assert.match(html, /pact_autopilot_resume_verify/);
 });
 
 test('browser boot fails closed on corrupt persistence instead of deleting evidence', async () => {
