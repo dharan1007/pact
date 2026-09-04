@@ -19,7 +19,7 @@ const bundles = {
   'adapter.bundle.js': moduleScope(await source('src/adapter.js'), ['definePactAdapter', 'validateAdapterPlan']),
   'persistence.bundle.js': moduleScope(await source('src/persistence.js'), ['LocalStorageSnapshotStore']),
   'webmcp.bundle.js': moduleScope(await source('src/webmcp.js'), ['createWebMcpRegistry']),
-  'http.bundle.js': moduleScope(await source('src/http.js'), ['createPactHttpConnector']),
+  'http.bundle.js': moduleScope(await source('src/http.js'), ['createPactHttpConnector', 'createPactRestIntegration']),
   'orchestrator.bundle.js': moduleScope(await source('src/orchestrator.js'), ['createPactOrchestrator']),
   'site.bundle.js': stripImports(await source('src/site.js')),
   'workspace.bundle.js': stripImports(await source('src/main.js')),
@@ -31,7 +31,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'persistence.js', 'orchestrator.js', 'agent-bridge.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
