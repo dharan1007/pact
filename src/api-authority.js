@@ -74,6 +74,17 @@ function applyPlan(canonical, plan) {
   return next;
 }
 
+function assertCommittedShape(canonical, transaction) {
+  if (canonical.version !== transaction.baseVersion + 1) fail('PACT_API_STALE_CANONICAL_STATE');
+  for (const effect of transaction.effects) {
+    if (!same(getPath(canonical, effect.path), effect.after)) fail(`PACT_API_RECOVERY_POSTCONDITION_FAILED:${effect.path}`);
+  }
+  for (const invariant of transaction.invariants) {
+    if (!same(getPath(canonical, invariant.path), invariant.equals)) fail(`PACT_API_RECOVERY_INVARIANT_FAILED:${invariant.path}`);
+  }
+  return clone(canonical);
+}
+
 function adapterKey(adapter) {
   if (!isPlainObject(adapter)) fail('PACT_API_ADAPTER_REQUIRED');
   return `${nonEmpty(adapter.id, 'PACT_API_ADAPTER_ID_REQUIRED')}@${nonEmpty(adapter.version, 'PACT_API_ADAPTER_VERSION_REQUIRED')}`;
@@ -232,9 +243,16 @@ export function createPactApiAuthorityService({
     if (!['APPROVED', 'COMMIT_AUTHORIZED'].includes(transaction.state)) fail('PACT_API_NOT_APPROVED');
     if (transaction._capabilityToken !== capabilityToken) fail('PACT_API_CAPABILITY_MISMATCH');
 
-    const canonical = assertCanonical(await readCanonical({ adapter: transaction.adapter, intent: clone(transaction.intent), transaction: sanitizeTransaction(transaction) }));
-    if (canonical.version !== transaction.baseVersion) fail('PACT_API_STALE_CANONICAL_STATE');
-    const nextState = applyPlan(canonical, { effects: transaction.effects, invariants: transaction.invariants });
+    let canonical = assertCanonical(await readCanonical({ adapter: transaction.adapter, intent: clone(transaction.intent), transaction: sanitizeTransaction(transaction) }));
+    let nextState;
+    if (transaction.state === 'APPROVED') {
+      if (canonical.version !== transaction.baseVersion) fail('PACT_API_STALE_CANONICAL_STATE');
+      nextState = applyPlan(canonical, { effects: transaction.effects, invariants: transaction.invariants });
+    } else if (canonical.version === transaction.baseVersion) {
+      nextState = applyPlan(canonical, { effects: transaction.effects, invariants: transaction.invariants });
+    } else {
+      nextState = assertCommittedShape(canonical, transaction);
+    }
 
     let authorization;
     if (transaction.state === 'APPROVED') {
@@ -263,28 +281,24 @@ export function createPactApiAuthorityService({
         }
       });
       transaction = txFromRecord(authorized);
+      if (canonical.version !== transaction.baseVersion) nextState = assertCommittedShape(canonical, transaction);
     } else {
       if (transaction.commitIdempotencyKey !== idempotencyKey) fail('PACT_API_IDEMPOTENCY_CONFLICT');
       authorization = clone(transaction.commitAuthorization);
       if (!isPlainObject(authorization)) fail('PACT_API_CORRUPT_AUTHORIZATION');
     }
 
-    let committedCanonical;
-    try {
-      committedCanonical = assertCanonical(await commitCanonical({
-        adapter: clone(transaction.adapter),
-        intent: clone(transaction.intent),
-        plan: { effects: clone(transaction.effects), invariants: clone(transaction.invariants), metadata: clone(transaction.metadata) },
-        expectedVersion: transaction.baseVersion,
-        nextState: clone(nextState),
-        authorization: clone(authorization),
-        idempotencyKey: authorization.authorizationId
-      }));
-    } catch (error) {
-      if (error?.message === 'PACT_API_STALE_CANONICAL_STATE') throw error;
-      throw error;
-    }
+    const committedCanonical = assertCanonical(await commitCanonical({
+      adapter: clone(transaction.adapter),
+      intent: clone(transaction.intent),
+      plan: { effects: clone(transaction.effects), invariants: clone(transaction.invariants), metadata: clone(transaction.metadata) },
+      expectedVersion: transaction.baseVersion,
+      nextState: clone(nextState),
+      authorization: clone(authorization),
+      idempotencyKey: authorization.authorizationId
+    }));
     if (committedCanonical.version !== transaction.baseVersion + 1) fail('PACT_API_INVALID_COMMIT_VERSION');
+    assertCommittedShape(committedCanonical, transaction);
 
     const completionHash = await payloadHash({ authorizationId: authorization.authorizationId, committedVersion: committedCanonical.version });
     const completed = await durable.transition({
@@ -302,7 +316,7 @@ export function createPactApiAuthorityService({
         };
       }
     });
-    return { transaction: sanitizeTransaction(txFromRecord(completed)), idempotentReplay: false };
+    return { transaction: sanitizeTransaction(txFromRecord(completed)), idempotentReplay: completed.idempotentReplay };
   }
 
   async function verify({ transactionId } = {}) {
