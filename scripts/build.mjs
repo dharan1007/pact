@@ -31,7 +31,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'http.js', 'webmcp.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
@@ -85,5 +85,5 @@ async function walk(dir, prefix='') {
 const files = await walk(dist);
 const hashes = {};
 for (const file of files) hashes[file] = createHash('sha256').update(await readFile(path.join(dist,file))).digest('hex');
-await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:8, files:hashes }, null, 2)+'\n');
+await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:9, files:hashes }, null, 2)+'\n');
 console.log(`Built ${files.length + 1} release files into dist/`);

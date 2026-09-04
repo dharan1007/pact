@@ -70,9 +70,10 @@
     "authority": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "atomicStoreRequired", "singleUseCommitCapability", "capabilityBinding", "idempotentReplay", "productionStoreRequirement"],
+      "required": ["module", "storeModule", "atomicStoreRequired", "singleUseCommitCapability", "capabilityBinding", "idempotentReplay", "productionStoreRequirement", "productionStore"],
       "properties": {
         "module": { "const": "./sdk/authority.js" },
+        "storeModule": { "const": "./sdk/redis-store.js" },
         "atomicStoreRequired": { "const": true },
         "singleUseCommitCapability": { "const": true },
         "capabilityBinding": {
@@ -88,7 +89,8 @@
           "maxItems": 5
         },
         "idempotentReplay": { "const": "same-key-only" },
-        "productionStoreRequirement": { "type": "string", "minLength": 1 }
+        "productionStoreRequirement": { "type": "string", "minLength": 1 },
+        "productionStore": { "type": "string", "minLength": 1 }
       }
     },
     "referenceRuntime": {

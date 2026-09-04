@@ -37,11 +37,13 @@
   },
   "authority": {
     "module": "./sdk/authority.js",
+    "storeModule": "./sdk/redis-store.js",
     "atomicStoreRequired": true,
     "singleUseCommitCapability": true,
     "capabilityBinding": ["txId", "planHash", "baseVersion", "humanPrincipal", "agentSession"],
     "idempotentReplay": "same-key-only",
-    "productionStoreRequirement": "durable atomic create and compare-and-swap"
+    "productionStoreRequirement": "durable atomic create and compare-and-swap",
+    "productionStore": "Redis-compatible HTTPS REST with atomic SET NX and Lua CAS"
   },
   "referenceRuntime": {
     "module": "./engine.bundle.js",
