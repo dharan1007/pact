@@ -33,6 +33,13 @@ function setPath(object, path, value) {
   cursor[segments.at(-1)] = clone(value);
 }
 function same(a, b) { return canonicalStringify(a) === canonicalStringify(b); }
+function validateApprovalClaims(value) {
+  if (!isPlainObject(value)) fail('PACT_RUNTIME_APPROVAL_REJECTED');
+  if (typeof value.humanPrincipal !== 'string' || value.humanPrincipal.trim() === '') fail('PACT_RUNTIME_APPROVAL_INVALID_PRINCIPAL');
+  if (typeof value.agentSession !== 'string' || value.agentSession.trim() === '') fail('PACT_RUNTIME_APPROVAL_INVALID_SESSION');
+  assertJson(value, 'PACT_RUNTIME_APPROVAL_INVALID_CLAIMS');
+  return clone(value);
+}
 
 export function createPactRuntime(options = {}) {
   const adapter = options.adapter;
@@ -42,6 +49,7 @@ export function createPactRuntime(options = {}) {
 
   const now = options.now ?? (() => Date.now());
   const leaseMs = options.leaseMs ?? 120_000;
+  const verifyApproval = options.verifyApproval;
   let canonical = clone(options.initialState);
   let transaction = null;
   let lease = null;
@@ -65,6 +73,11 @@ export function createPactRuntime(options = {}) {
   async function assertPlanIntegrity() {
     if (!transaction?.planHash) fail('PACT_RUNTIME_PLAN_REQUIRED');
     if (await sha256Hex(payload(transaction)) !== transaction.planHash) fail('PACT_RUNTIME_PLAN_TAMPERED');
+  }
+
+  async function assertApprovalIntegrity() {
+    if (!transaction?.approvalClaims || !transaction?.approvalClaimsHash) fail('PACT_RUNTIME_APPROVAL_REQUIRED');
+    if (await sha256Hex(transaction.approvalClaims) !== transaction.approvalClaimsHash) fail('PACT_RUNTIME_APPROVAL_CLAIMS_TAMPERED');
   }
 
   function startIntent(intent) {
@@ -102,25 +115,48 @@ export function createPactRuntime(options = {}) {
       invariants: plan.invariants,
       metadata: plan.metadata
     };
+    delete transaction.approvalClaims;
+    delete transaction.approvalClaimsHash;
     transaction.planHash = await sha256Hex(payload(transaction));
     lease = null;
     await appendAudit('PREVIEWED', { txId: transaction.id, adapter: transaction.adapter, planHash: transaction.planHash, baseVersion: transaction.baseVersion });
     return clone(transaction);
   }
 
-  async function approve({ trusted } = {}) {
-    if (!trusted) fail('PACT_RUNTIME_TRUSTED_GESTURE_REQUIRED');
+  async function approve({ approval } = {}) {
     if (transaction?.state !== 'PREVIEWED') fail('PACT_RUNTIME_NOT_PREVIEWED');
     await assertPlanIntegrity();
+    if (typeof verifyApproval !== 'function') fail('PACT_RUNTIME_APPROVAL_VERIFIER_REQUIRED');
+    const verified = await verifyApproval({
+      approval: clone(approval),
+      txId: transaction.id,
+      planHash: transaction.planHash,
+      adapter: clone(transaction.adapter),
+      intent: clone(transaction.intent),
+      baseVersion: transaction.baseVersion,
+      effects: clone(transaction.effects),
+      invariants: clone(transaction.invariants)
+    });
+    if (!verified) fail('PACT_RUNTIME_APPROVAL_REJECTED');
+    const approvalClaims = validateApprovalClaims(verified);
+    const approvalClaimsHash = await sha256Hex(approvalClaims);
     lease = {
       token: `lease_${globalThis.crypto.randomUUID()}`,
       txId: transaction.id,
       planHash: transaction.planHash,
+      approvalClaimsHash,
       issuedAt: now(),
       expiresAt: now() + leaseMs
     };
-    transaction = { ...transaction, state: 'APPROVED', approvedAt: now() };
-    await appendAudit('APPROVED', { txId: transaction.id, planHash: transaction.planHash, expiresAt: lease.expiresAt });
+    transaction = { ...transaction, state: 'APPROVED', approvalClaims, approvalClaimsHash, approvedAt: now() };
+    await appendAudit('APPROVED', {
+      txId: transaction.id,
+      planHash: transaction.planHash,
+      approvalClaimsHash,
+      humanPrincipal: approvalClaims.humanPrincipal,
+      agentSession: approvalClaims.agentSession,
+      expiresAt: lease.expiresAt
+    });
     return clone(transaction);
   }
 
@@ -129,7 +165,8 @@ export function createPactRuntime(options = {}) {
     if (['COMMITTED', 'VERIFIED'].includes(transaction.state)) return clone(transaction);
     if (transaction.state !== 'APPROVED') fail('PACT_RUNTIME_NOT_APPROVED');
     await assertPlanIntegrity();
-    if (!lease || lease.txId !== transaction.id || lease.planHash !== transaction.planHash || now() > lease.expiresAt) fail('PACT_RUNTIME_INVALID_OR_EXPIRED_LEASE');
+    await assertApprovalIntegrity();
+    if (!lease || lease.txId !== transaction.id || lease.planHash !== transaction.planHash || lease.approvalClaimsHash !== transaction.approvalClaimsHash || now() > lease.expiresAt) fail('PACT_RUNTIME_INVALID_OR_EXPIRED_LEASE');
     if (canonical.version !== transaction.baseVersion) fail('PACT_RUNTIME_STALE_PLAN');
 
     for (const effect of transaction.effects) {
@@ -144,7 +181,7 @@ export function createPactRuntime(options = {}) {
     canonical = next;
     transaction = { ...transaction, state: 'COMMITTED', commitVersion: canonical.version, committedAt: now() };
     lease = null;
-    await appendAudit('COMMITTED', { txId: transaction.id, planHash: transaction.planHash, commitVersion: transaction.commitVersion });
+    await appendAudit('COMMITTED', { txId: transaction.id, planHash: transaction.planHash, approvalClaimsHash: transaction.approvalClaimsHash, commitVersion: transaction.commitVersion });
     return clone(transaction);
   }
 
@@ -153,6 +190,7 @@ export function createPactRuntime(options = {}) {
     if (transaction.state === 'VERIFIED') return clone(transaction.receipt);
     if (transaction.state !== 'COMMITTED') fail('PACT_RUNTIME_NOT_COMMITTED');
     await assertPlanIntegrity();
+    await assertApprovalIntegrity();
     for (const effect of transaction.effects) {
       if (!same(getPath(canonical, effect.path), effect.after)) fail(`PACT_RUNTIME_POSTCONDITION_FAILED:${effect.path}`);
     }
@@ -163,6 +201,7 @@ export function createPactRuntime(options = {}) {
       intent: clone(transaction.intent),
       state: clone(canonical),
       plan: { effects: clone(transaction.effects), invariants: clone(transaction.invariants), metadata: clone(transaction.metadata) },
+      approvalClaims: clone(transaction.approvalClaims),
       transaction: { id: transaction.id, baseVersion: transaction.baseVersion, commitVersion: transaction.commitVersion, planHash: transaction.planHash }
     });
     if (!adapterVerified) fail('PACT_RUNTIME_ADAPTER_VERIFICATION_FAILED');
@@ -170,6 +209,8 @@ export function createPactRuntime(options = {}) {
       txId: transaction.id,
       adapter: clone(transaction.adapter),
       planHash: transaction.planHash,
+      approvalClaims: clone(transaction.approvalClaims),
+      approvalClaimsHash: transaction.approvalClaimsHash,
       baseVersion: transaction.baseVersion,
       commitVersion: transaction.commitVersion,
       verifiedVersion: canonical.version,
@@ -179,7 +220,7 @@ export function createPactRuntime(options = {}) {
     };
     const receipt = { ...body, receiptHash: await sha256Hex(body) };
     transaction = { ...transaction, state: 'VERIFIED', receipt };
-    await appendAudit('RECEIPT', { txId: transaction.id, receiptHash: receipt.receiptHash });
+    await appendAudit('RECEIPT', { txId: transaction.id, receiptHash: receipt.receiptHash, approvalClaimsHash: transaction.approvalClaimsHash });
     return clone(receipt);
   }
 
