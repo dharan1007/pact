@@ -31,7 +31,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
@@ -72,6 +72,8 @@ await mkdir(path.join(dist, 'schema'), { recursive: true });
 for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json']) {
   await cp(path.join(root, `schema/${file}`), path.join(dist, `schema/${file}`));
 }
+await mkdir(path.join(dist, 'docs'), { recursive: true });
+await cp(path.join(root, 'docs/agent-bridges.md'), path.join(dist, 'docs/agent-bridges.md'));
 
 async function walk(dir, prefix='') {
   const out=[];
@@ -85,5 +87,5 @@ async function walk(dir, prefix='') {
 const files = await walk(dist);
 const hashes = {};
 for (const file of files) hashes[file] = createHash('sha256').update(await readFile(path.join(dist,file))).digest('hex');
-await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:9, files:hashes }, null, 2)+'\n');
+await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:10, files:hashes }, null, 2)+'\n');
 console.log(`Built ${files.length + 1} release files into dist/`);
