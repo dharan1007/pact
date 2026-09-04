@@ -81,7 +81,7 @@ export function createPactRuntime(options = {}) {
   }
 
   function startIntent(intent) {
-    if (transaction && !['CANCELLED', 'ROLLED_BACK'].includes(transaction.state)) fail('PACT_RUNTIME_ACTIVE_TRANSACTION');
+    if (transaction && !['CANCELLED', 'ROLLED_BACK', 'VERIFIED'].includes(transaction.state)) fail('PACT_RUNTIME_ACTIVE_TRANSACTION');
     assertJson(intent, 'PACT_RUNTIME_INTENT_MUST_BE_JSON');
     transaction = {
       id: `tx_${globalThis.crypto.randomUUID()}`,
