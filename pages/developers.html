@@ -39,8 +39,13 @@ const api = createPactHttpConnector({
   baseUrl: 'https://example.com'
 });
 
-await api.preview({ intent });
-await api.commit({ txId }, txId);</code></pre></div><div class="dev-copy"><div class="kicker">REMOTE SYSTEMS</div><h2>Keep consequential retries idempotent.</h2><p>The REST connector posts to <code>/api/pact</code>, enforces HTTPS outside localhost development and requires an idempotency key for commit and rollback before network I/O. A production authority endpoint must persist transaction state, replay protection and idempotency records durably; the static reference deployment does not provide that guarantee yet.</p><p>Discover the supported modules, schemas, HTTP envelope and documentation URLs from <a href="/pact-manifest.json"><code>/pact-manifest.json</code></a>.</p></div></section><section class="section developer-grid"><div class="code-window"><div class="window-top"><span></span><span></span><span></span><b>WebMCP</b></div><pre><code>const context = document.modelContext;
+const request = new AbortController();
+await api.preview({ intent }, { signal: request.signal });
+await api.commit({ txId }, txId, { signal: request.signal });
+
+// Caller cancellation =&gt; PACT_HTTP_ABORTED
+// Connector deadline =&gt; PACT_HTTP_TIMEOUT
+request.abort();</code></pre></div><div class="dev-copy"><div class="kicker">REMOTE SYSTEMS</div><h2>Keep consequential retries idempotent and requests cancellable.</h2><p>The REST connector posts to <code>/api/pact</code>, enforces HTTPS outside localhost development and requires an idempotency key for commit and rollback before network I/O. Every operation accepts an optional caller <code>AbortSignal</code>; caller cancellation fails as <code>PACT_HTTP_ABORTED</code>, while the connector's own deadline remains <code>PACT_HTTP_TIMEOUT</code>, so application code can distinguish user/navigation cancellation from transport timeout.</p><p>A production authority endpoint must persist transaction state, replay protection and idempotency records durably; the static reference deployment does not provide that guarantee yet. Discover the supported modules, schemas, HTTP envelope and documentation URLs from <a href="/pact-manifest.json"><code>/pact-manifest.json</code></a>.</p></div></section><section class="section developer-grid"><div class="code-window"><div class="window-top"><span></span><span></span><span></span><b>WebMCP</b></div><pre><code>const context = document.modelContext;
 await context.registerTool({
   name: 'pact_inspect',
   description: 'Inspect PACT state without mutation.',

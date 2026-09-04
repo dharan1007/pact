@@ -23,6 +23,14 @@ function normalizeIdempotencyKey(operation, value) {
   return key;
 }
 
+function assertAbortSignal(signal) {
+  if (signal == null) return null;
+  if (typeof signal !== 'object' || typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function') {
+    throw new Error('PACT_HTTP_INVALID_ABORT_SIGNAL');
+  }
+  return signal;
+}
+
 export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch, timeoutMs = 10_000, headers = {} }) {
   if (typeof fetchImpl !== 'function') throw new Error('PACT_HTTP_FETCH_REQUIRED');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('PACT_HTTP_INVALID_TIMEOUT');
@@ -31,8 +39,24 @@ export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch,
   async function request(operation, payload = {}, options = {}) {
     if (!/^[a-z][a-z0-9_]*$/.test(operation)) throw new Error('PACT_HTTP_INVALID_OPERATION');
     const idempotencyKey = normalizeIdempotencyKey(operation, options.idempotencyKey);
+    const callerSignal = assertAbortSignal(options.signal);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error('PACT_HTTP_TIMEOUT')), timeoutMs);
+    let timedOut = false;
+    let callerAborted = false;
+
+    const abortFromCaller = () => {
+      callerAborted = true;
+      controller.abort(callerSignal.reason ?? new Error('PACT_HTTP_ABORTED'));
+    };
+
+    if (callerSignal?.aborted) abortFromCaller();
+    else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error('PACT_HTTP_TIMEOUT'));
+    }, timeoutMs);
+
     const requestHeaders = {
       accept: 'application/json',
       'content-type': 'application/json',
@@ -59,23 +83,25 @@ export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch,
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('PACT_HTTP_INVALID_RESPONSE');
       return body;
     } catch (error) {
-      if (controller.signal.aborted) throw new Error('PACT_HTTP_TIMEOUT', { cause: error });
+      if (timedOut) throw new Error('PACT_HTTP_TIMEOUT', { cause: error });
+      if (callerAborted) throw new Error('PACT_HTTP_ABORTED', { cause: callerSignal.reason ?? error });
       throw error;
     } finally {
       clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', abortFromCaller);
     }
   }
 
   return {
     endpoint,
     request,
-    inspect: payload => request('inspect', payload),
-    preview: payload => request('preview', payload),
-    approve: payload => request('approve', payload),
-    commit: (payload, idempotencyKey) => request('commit', payload, { idempotencyKey }),
-    verify: payload => request('verify', payload),
-    receipt: payload => request('receipt', payload),
-    rollback: (payload, idempotencyKey) => request('rollback', payload, { idempotencyKey }),
-    cancel: payload => request('cancel', payload)
+    inspect: (payload, options) => request('inspect', payload, options),
+    preview: (payload, options) => request('preview', payload, options),
+    approve: (payload, options) => request('approve', payload, options),
+    commit: (payload, idempotencyKey, options = {}) => request('commit', payload, { ...options, idempotencyKey }),
+    verify: (payload, options) => request('verify', payload, options),
+    receipt: (payload, options) => request('receipt', payload, options),
+    rollback: (payload, idempotencyKey, options = {}) => request('rollback', payload, { ...options, idempotencyKey }),
+    cancel: (payload, options) => request('cancel', payload, options)
   };
 }
