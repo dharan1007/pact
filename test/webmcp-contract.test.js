@@ -9,13 +9,13 @@ test('WebMCP execute results preserve structured JavaScript values for user-agen
 });
 
 test('registered tools expose current WebMCP annotations and execution cancellation options', async () => {
-  const engine = createPactEngine();
-  const calls = [];
-  const modelContext = { registerTool(tool, options) { calls.push({ tool, options }); } };
-  const registry = createWebMcpRegistry({ engine, modelContext });
-  await registry.refresh();
+  const idleEngine = createPactEngine();
+  const idleCalls = [];
+  const modelContext = { registerTool(tool, options) { idleCalls.push({ tool, options }); } };
+  const idleRegistry = createWebMcpRegistry({ engine: idleEngine, modelContext });
+  await idleRegistry.refresh();
 
-  const inspect = calls.find(({ tool }) => tool.name === 'pact_inspect').tool;
+  const inspect = idleCalls.find(({ tool }) => tool.name === 'pact_inspect').tool;
   assert.equal(typeof inspect.title, 'string');
   assert(inspect.title.length > 0);
   assert.equal(typeof inspect.description, 'string');
@@ -26,16 +26,33 @@ test('registered tools expose current WebMCP annotations and execution cancellat
     untrustedContentHint: false,
     consequentialHint: false
   });
-  assert.deepEqual(await inspect.execute({}, { signal: new AbortController().signal }), engine.inspect());
+  assert.deepEqual(await inspect.execute({}, { signal: new AbortController().signal }), idleEngine.inspect());
 
-  const commit = calls.find(({ tool }) => tool.name === 'pact_start_intent').tool;
+  const start = idleCalls.find(({ tool }) => tool.name === 'pact_start_intent').tool;
+  assert.deepEqual(start.annotations, {
+    readOnlyHint: false,
+    untrustedContentHint: false,
+    consequentialHint: false
+  });
+
+  const aborted = new AbortController();
+  aborted.abort(new Error('cancelled by caller'));
+  await assert.rejects(() => start.execute({}, { signal: aborted.signal }), /WEBMCP_EXECUTION_ABORTED/);
+
+  const approvedEngine = createPactEngine();
+  approvedEngine.startIntent();
+  await approvedEngine.preview();
+  await approvedEngine.approve({ trusted: true });
+  const approvedCalls = [];
+  const approvedRegistry = createWebMcpRegistry({
+    engine: approvedEngine,
+    modelContext: { registerTool(tool, options) { approvedCalls.push({ tool, options }); } }
+  });
+  await approvedRegistry.refresh();
+  const commit = approvedCalls.find(({ tool }) => tool.name === 'pact_commit_transaction').tool;
   assert.deepEqual(commit.annotations, {
     readOnlyHint: false,
     untrustedContentHint: false,
     consequentialHint: true
   });
-
-  const aborted = new AbortController();
-  aborted.abort(new Error('cancelled by caller'));
-  await assert.rejects(() => commit.execute({}, { signal: aborted.signal }), /WEBMCP_EXECUTION_ABORTED/);
 });
