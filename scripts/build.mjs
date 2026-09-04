@@ -23,6 +23,7 @@ const bundles = {
   'orchestrator.bundle.js': moduleScope(await source('src/orchestrator.js'), ['createPactOrchestrator']),
   'site.bundle.js': stripImports(await source('src/site.js')),
   'workspace.bundle.js': stripImports(await source('src/main.js')),
+  'playground.bundle.js': stripImports(await source('src/playground.js')),
   'demo.bundle.js': stripImports(await source('src/demo.js'))
 };
 for (const [name, contents] of Object.entries(bundles)) await writeFile(path.join(dist, name), contents);
@@ -38,10 +39,12 @@ for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'ap
 const scriptMap = new Map([
   ['/src/site.js', '/site.bundle.js'],
   ['/src/main.js', '/workspace.bundle.js'],
+  ['/src/playground.js', '/playground.bundle.js'],
   ['/src/demo.js', '/demo.bundle.js']
 ]);
 const dependencyScripts = {
   '/workspace.bundle.js': ['/engine.bundle.js','/persistence.bundle.js','/webmcp.bundle.js'],
+  '/playground.bundle.js': ['/http.bundle.js'],
   '/demo.bundle.js': ['/engine.bundle.js','/persistence.bundle.js','/orchestrator.bundle.js']
 };
 function transformHtml(html) {
