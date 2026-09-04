@@ -27,10 +27,10 @@ test('workspace and demo use different runtime entrypoints', () => {
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships generic runtime, canonical API authority, durable state and atomic store as importable ESM SDK modules with manifest discovery', () => {
+test('release ships generic runtime, canonical API authority, durable state and atomic stores as importable ESM SDK modules with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'webmcp.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   const manifest = JSON.parse(readFileSync(path.join(root, 'dist/pact-manifest.json'), 'utf8'));
@@ -39,6 +39,7 @@ test('release ships generic runtime, canonical API authority, durable state and 
   assert.equal(manifest.runtime.approvalVerifierRequired, true);
   assert.equal(manifest.authority.module, './sdk/authority.js');
   assert.equal(manifest.authority.storeModule, './sdk/redis-store.js');
+  assert.equal(manifest.authority.canonicalStoreModule, './sdk/canonical-store.js');
   assert.equal(manifest.authority.atomicStoreRequired, true);
   assert.equal(manifest.authority.singleUseCommitCapability, true);
 });
