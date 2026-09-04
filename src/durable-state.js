@@ -5,6 +5,7 @@ const nonEmpty = (value, code) => {
   return value.trim();
 };
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
 function assertAtomicStore(store) {
   if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
@@ -70,9 +71,9 @@ export function createPactDurableStateStore({ store, now = () => Date.now(), pre
       const currentRaw = await store.get(key);
       if (!currentRaw) fail('PACT_DURABLE_TRANSACTION_NOT_FOUND');
       const current = validateRecord(currentRaw);
-      const replay = current.replays[idempotencyKey];
-      if (replay) {
-        if (replay.payloadHash !== payloadHash || replay.nextState !== nextState) fail('PACT_DURABLE_IDEMPOTENCY_CONFLICT');
+      if (hasOwn(current.replays, idempotencyKey)) {
+        const replay = current.replays[idempotencyKey];
+        if (!isPlainObject(replay) || replay.payloadHash !== payloadHash || replay.nextState !== nextState) fail('PACT_DURABLE_IDEMPOTENCY_CONFLICT');
         return { ...clone(replay.result), idempotentReplay: true };
       }
 
@@ -92,12 +93,7 @@ export function createPactDurableStateStore({ store, now = () => Date.now(), pre
       nextStateDocument.transaction.state = nextState;
 
       const version = current.version + 1;
-      const journalEvent = {
-        seq: version,
-        type: nextState,
-        at: timestamp(),
-        data: clone(data)
-      };
+      const journalEvent = { seq: version, type: nextState, at: timestamp(), data: clone(data) };
       const result = {
         version,
         state: clone(nextStateDocument),
@@ -110,11 +106,7 @@ export function createPactDurableStateStore({ store, now = () => Date.now(), pre
         journal: result.journal,
         replays: {
           ...clone(current.replays),
-          [idempotencyKey]: {
-            payloadHash,
-            nextState,
-            result: clone(result)
-          }
+          [idempotencyKey]: { payloadHash, nextState, result: clone(result) }
         }
       };
       if (await store.compareAndSwap(key, current.version, next)) return result;
