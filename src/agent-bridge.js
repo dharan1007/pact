@@ -70,7 +70,12 @@ export function createPactAgentToolCatalog({ connector }) {
   return { tools: () => clone(tools), execute };
 }
 
-export async function registerPactWebMcpBridge({ connector, modelContext = globalThis.document?.modelContext }) {
+export async function registerPactWebMcpBridge({
+  connector,
+  modelContext = globalThis.document?.modelContext,
+  untrustedContentHint = true
+}) {
+  if (typeof untrustedContentHint !== 'boolean') fail('PACT_AGENT_INVALID_UNTRUSTED_CONTENT_HINT');
   const catalog = createPactAgentToolCatalog({ connector });
   if (!modelContext?.registerTool) return { supported: false, names: [], dispose() {} };
   const controller = new AbortController();
@@ -84,7 +89,7 @@ export async function registerPactWebMcpBridge({ connector, modelContext = globa
         inputSchema: tool.inputSchema,
         annotations: {
           readOnlyHint: tool.annotations.readOnlyHint,
-          untrustedContentHint: false
+          untrustedContentHint
         },
         execute: async (input, ctx = {}) => catalog.execute(tool.name, input, { signal: ctx.signal })
       }, { signal: controller.signal });
