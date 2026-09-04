@@ -40,7 +40,11 @@ test('developers page documents the reusable SDK, authority boundary and current
 test('developers page shows the exact HTTP connector API and current WebMCP annotation surface', async () => {
   const html = await readFile('pages/developers.html','utf8');
   assert.match(html, /baseUrl: 'https:\/\/example\.com'/);
-  assert.match(html, /api\.commit\(\{ txId \}, txId\)/);
+  assert.match(html, /api\.commit\(\{ txId \}, txId/);
+  assert.match(html, /AbortController/);
+  assert.match(html, /signal: request\.signal/);
+  assert.match(html, /PACT_HTTP_ABORTED/);
+  assert.match(html, /PACT_HTTP_TIMEOUT/);
   assert.doesNotMatch(html, /endpoint: 'https:\/\/example\.com\/api\/pact'/);
   assert.doesNotMatch(html, /annotated as consequential/i);
   assert.match(html, /readOnlyHint/);
