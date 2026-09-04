@@ -62,3 +62,23 @@ test('approval is accepted only through an authority verifier and identity claim
   const receipt = await runtime.verify();
   assert.deepEqual(receipt.approvalClaims, { humanPrincipal: 'human:maya', agentSession: 'agent:chatgpt:7' });
 });
+
+test('a verified transaction is terminal and the runtime can begin a new transaction against the new canonical version', async () => {
+  const runtime = createPactRuntime({
+    adapter: makeFlagsAdapter(),
+    initialState: { version: 0, flags: { beta: false, gamma: false }, billing: { plan: 'free' } },
+    verifyApproval: async () => ({ humanPrincipal: 'human:maya', agentSession: 'agent:session-1' })
+  });
+
+  runtime.startIntent({ flag: 'beta' });
+  await runtime.preview();
+  await runtime.approve({ approval: 'ok' });
+  await runtime.commit();
+  await runtime.verify();
+
+  const second = runtime.startIntent({ flag: 'gamma' });
+  assert.equal(second.state, 'DRAFT');
+  const preview = await runtime.preview();
+  assert.equal(preview.baseVersion, 1);
+  assert.deepEqual(preview.effects, [{ path: 'flags.gamma', before: false, after: true }]);
+});
