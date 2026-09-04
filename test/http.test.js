@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPactHttpConnector } from '../src/http.js';
+import * as httpModule from '../src/http.js';
+
+const { createPactHttpConnector } = httpModule;
 
 test('HTTP connector requires HTTPS outside localhost', () => {
   assert.throws(() => createPactHttpConnector({ baseUrl: 'http://example.com', fetchImpl: async () => {} }), /PACT_HTTP_REQUIRES_HTTPS/);
@@ -90,4 +92,81 @@ test('HTTP connector keeps timeout failures distinct from caller cancellation', 
   });
 
   await assert.rejects(connector.inspect({}), /PACT_HTTP_TIMEOUT/);
+});
+
+test('exports a secure REST integration for real external systems', () => {
+  assert.equal(typeof httpModule.createPactRestIntegration, 'function');
+});
+
+test('REST integration binds remote reads and writes to revision plus idempotency', async () => {
+  const calls = [];
+  const responses = [
+    {
+      ok: true,
+      status: 200,
+      headers: { get: name => name.toLowerCase() === 'etag' ? '"7"' : null },
+      text: async () => JSON.stringify({ projects: { helios: { owner: 'ada' } }, billing: { plan: 'pro' } })
+    },
+    {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ requestId: 'provider_123' })
+    }
+  ];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return responses.shift();
+  };
+  const integration = httpModule.createPactRestIntegration({
+    id: 'projects.rest',
+    version: '1.0.0',
+    baseUrl: 'https://api.example',
+    fetchImpl,
+    headers: { authorization: 'Bearer server-secret' },
+    resourcePath: ({ intent }) => `/projects/${intent.projectId}`,
+    plan: async ({ intent, state }) => ({
+      effects: [{ path: 'projects.helios.owner', before: state.projects.helios.owner, after: intent.newOwner }],
+      invariants: [{ path: 'billing.plan', equals: state.billing.plan }]
+    }),
+    buildApply: ({ plan }) => ({ method: 'PATCH', body: { owner: plan.effects[0].after } }),
+    verify: async ({ state, plan }) => state.projects.helios.owner === plan.effects[0].after
+  });
+
+  const snapshot = await integration.read({ intent: { projectId: 'helios' } });
+  assert.equal(snapshot.revision, '"7"');
+  assert.equal(snapshot.state.projects.helios.owner, 'ada');
+  await integration.apply({
+    intent: { projectId: 'helios' },
+    state: snapshot.state,
+    revision: snapshot.revision,
+    plan: { effects: [{ path: 'projects.helios.owner', before: 'ada', after: 'maya' }], invariants: [] },
+    approvalClaims: { humanPrincipal: 'user:1', agentSession: 'agent:1' },
+    transaction: { id: 'tx_1', planHash: 'hash', baseRevision: '"7"' },
+    idempotencyKey: 'commit:helios'
+  });
+
+  assert.equal(calls[0].url, 'https://api.example/projects/helios');
+  assert.equal(calls[0].init.method, 'GET');
+  assert.equal(calls[1].url, 'https://api.example/projects/helios');
+  assert.equal(calls[1].init.method, 'PATCH');
+  assert.equal(calls[1].init.headers['if-match'], '"7"');
+  assert.equal(calls[1].init.headers['idempotency-key'], 'commit:helios');
+  assert.equal(calls[1].init.headers.authorization, 'Bearer server-secret');
+  assert.deepEqual(JSON.parse(calls[1].init.body), { owner: 'maya' });
+});
+
+test('REST integration rejects insecure origins and cross-origin resource paths before I/O', async () => {
+  assert.throws(() => httpModule.createPactRestIntegration({
+    id: 'unsafe.rest', version: '1.0.0', baseUrl: 'http://api.example', fetchImpl: async () => {},
+    resourcePath: () => '/x', plan: async () => ({ effects: [], invariants: [] }), buildApply: () => ({ method: 'PATCH' }), verify: async () => true
+  }), /PACT_HTTP_REQUIRES_HTTPS/);
+
+  let calls = 0;
+  const integration = httpModule.createPactRestIntegration({
+    id: 'safe.rest', version: '1.0.0', baseUrl: 'https://api.example', fetchImpl: async () => { calls++; },
+    resourcePath: () => 'https://evil.example/steal', plan: async () => ({ effects: [], invariants: [] }), buildApply: () => ({ method: 'PATCH' }), verify: async () => true
+  });
+  await assert.rejects(() => integration.read({ intent: {} }), /PACT_REST_INVALID_RESOURCE_PATH/);
+  assert.equal(calls, 0);
 });
