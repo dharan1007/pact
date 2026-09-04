@@ -49,6 +49,24 @@ function updateButtons() {
   setText('plan-hash', state.transaction?.planHash ?? '—');
 }
 
+function renderRecoveredTransaction(transaction) {
+  if (!transaction) return;
+  setText('plan-output', {
+    transactionId: transaction.id,
+    adapter: transaction.adapter,
+    baseVersion: transaction.baseVersion,
+    planHash: transaction.planHash,
+    effects: transaction.effects,
+    invariants: transaction.invariants,
+    metadata: transaction.metadata
+  });
+  if (transaction.state === 'COMMITTED') {
+    setText('commit-output', { transaction, recovery: 'Canonical write already exists. Resume with Verify; do not commit again.' });
+  } else if (transaction.state === 'VERIFIED') {
+    setText('verification-output', { transaction, recovery: 'Transaction is already verified. Reload the receipt if needed.' });
+  }
+}
+
 function recordRequest(operation, payload, idempotencyKey = null) {
   const envelope = { operation, payload };
   setText('request-output', envelope);
@@ -77,15 +95,8 @@ async function preview() {
   state.transaction = result.transaction;
   state.capability = null;
   state.receipt = null;
-  setText('plan-output', {
-    transactionId: result.transaction.id,
-    adapter: result.transaction.adapter,
-    baseVersion: result.transaction.baseVersion,
-    planHash: result.transaction.planHash,
-    effects: result.transaction.effects,
-    invariants: result.transaction.invariants,
-    metadata: result.transaction.metadata
-  });
+  $('recovery-tx-id').value = result.transaction.id;
+  renderRecoveredTransaction(result.transaction);
   updateButtons();
 }
 
@@ -126,7 +137,7 @@ async function verify() {
   if (!state.transaction?.id) throw new Error('PACT_PLAYGROUND_TRANSACTION_REQUIRED');
   const payload = { transactionId: state.transaction.id };
   const result = await run('verify', payload, () => connector.verify(payload));
-  state.transaction = { ...state.transaction, state: 'VERIFIED' };
+  state.transaction = result.transaction ?? { ...state.transaction, state: 'VERIFIED' };
   state.receipt = result.receipt;
   setText('verification-output', result);
   setText('receipt-output', result.receipt);
@@ -147,10 +158,34 @@ async function inspect() {
   const result = await run('inspect', payload, () => connector.inspect(payload));
   if (result.transaction) state.transaction = result.transaction;
   setText('inspect-output', result);
+  renderRecoveredTransaction(result.transaction);
   updateButtons();
 }
 
-for (const [id, fn] of Object.entries({ preview, approve, commit, verify, receipt, inspect })) {
+async function recover() {
+  const transactionId = $('recovery-tx-id').value.trim();
+  if (!transactionId) throw new Error('PACT_PLAYGROUND_RECOVERY_TRANSACTION_REQUIRED');
+  const payload = { transactionId };
+  const result = await run('inspect', payload, () => connector.inspect(payload));
+  if (!result.transaction) throw new Error('PACT_PLAYGROUND_RECOVERY_TRANSACTION_NOT_FOUND');
+  state.transaction = result.transaction;
+  state.capability = null;
+  state.receipt = null;
+  setText('inspect-output', result);
+  renderRecoveredTransaction(result.transaction);
+  updateButtons();
+  if (result.transaction.state === 'COMMITTED') {
+    status('Recovered COMMITTED transaction. Resume with Verify; commit will not be repeated.', 'success');
+  } else if (result.transaction.state === 'VERIFIED') {
+    status('Recovered VERIFIED transaction. Reload the receipt if needed.', 'success');
+  } else if (result.transaction.state === 'APPROVED') {
+    status('Recovered APPROVED transaction without browser-held capability. Re-approval is required before commit.', 'info');
+  } else {
+    status(`Recovered ${result.transaction.state} transaction.`, 'success');
+  }
+}
+
+for (const [id, fn] of Object.entries({ preview, approve, commit, verify, receipt, inspect, recover })) {
   $(id).addEventListener('click', () => fn().catch(() => {}));
 }
 
