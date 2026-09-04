@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "integrations", "agentBridges", "authority", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "integrations", "agentBridges", "server", "authority", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -93,16 +93,24 @@
       "required": ["module", "surfaces", "webmcpHost", "webmcpUntrustedContentDefault", "mcpProtocolRevision", "transportOwnedByHost"],
       "properties": {
         "module": { "const": "./sdk/agent-bridge.js" },
-        "surfaces": {
-          "type": "array",
-          "prefixItems": [{"const":"http"},{"const":"webmcp"},{"const":"mcp"}],
-          "minItems": 3,
-          "maxItems": 3
-        },
+        "surfaces": { "type": "array", "prefixItems": [{"const":"http"},{"const":"webmcp"},{"const":"mcp"}], "minItems": 3, "maxItems": 3 },
         "webmcpHost": { "const": "document.modelContext" },
         "webmcpUntrustedContentDefault": { "const": true },
         "mcpProtocolRevision": { "const": "2026-07-28" },
         "transportOwnedByHost": { "const": true }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["journalModule", "storeContract", "crossInstanceClaims", "persistentIdempotentReplay", "uncertainCommitRecovery", "consequentialOperations"],
+      "properties": {
+        "journalModule": { "const": "./sdk/journal.js" },
+        "storeContract": { "type": "array", "prefixItems": [{"const":"get"},{"const":"create"},{"const":"compareAndSwap"}], "minItems": 3, "maxItems": 3 },
+        "crossInstanceClaims": { "const": true },
+        "persistentIdempotentReplay": { "const": true },
+        "uncertainCommitRecovery": { "const": true },
+        "consequentialOperations": { "type": "array", "prefixItems": [{"const":"commit"},{"const":"rollback"}], "minItems": 2, "maxItems": 2 }
       }
     },
     "authority": {
