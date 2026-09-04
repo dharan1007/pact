@@ -27,6 +27,18 @@ test('workspace and demo use different runtime entrypoints', () => {
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
+test('release ships the generic adapter runtime as an importable ESM SDK with manifest discovery', () => {
+  const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'http.js', 'webmcp.js']) {
+    assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
+  }
+  const manifest = JSON.parse(readFileSync(path.join(root, 'dist/pact-manifest.json'), 'utf8'));
+  assert.equal(manifest.runtime.module, './sdk/runtime.js');
+  assert.equal(manifest.runtime.adapterDriven, true);
+  assert.equal(manifest.runtime.approvalVerifierRequired, true);
+});
+
 test('identical source produces an identical release manifest', () => {
   const first = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(first.status, 0, first.stderr || first.stdout);

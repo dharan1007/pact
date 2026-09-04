@@ -27,18 +27,25 @@
     "maxEffects": 256,
     "maxInvariants": 256
   },
+  "runtime": {
+    "module": "./sdk/runtime.js",
+    "adapterDriven": true,
+    "approvalVerifierRequired": true,
+    "stateModel": "optimistic-versioned",
+    "receiptBindsApprovalClaims": true
+  },
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
-    "warning": "The bundled reference engine demonstrates PACT transaction semantics but is not yet wired to execute arbitrary adapters end-to-end."
+    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js with a validated adapter and an application-controlled approval verifier."
   },
   "security": {
-    "humanApproval": "trusted UI gesture required",
+    "humanApproval": "application-supplied verifier must validate approval and return humanPrincipal plus agentSession claims",
     "planBinding": "sha256",
     "stateBinding": "canonical version",
-    "authority": "short-lived approval lease",
-    "verification": "postconditions plus negative invariants",
-    "receipt": "hash plus audit-chain anchor"
+    "authority": "short-lived approval lease bound to plan hash and approval-claims hash",
+    "verification": "postconditions plus invariants plus adapter verification",
+    "receipt": "hash binds adapter, plan, versions, effects, invariants and approval claims"
   },
   "documentation": {
     "developers": "/developers/",

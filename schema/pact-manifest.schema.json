@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -47,6 +47,18 @@
         "planModel": { "const": "declarative-effects-and-invariants" },
         "maxEffects": { "const": 256 },
         "maxInvariants": { "const": 256 }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "adapterDriven", "approvalVerifierRequired", "stateModel", "receiptBindsApprovalClaims"],
+      "properties": {
+        "module": { "const": "./sdk/runtime.js" },
+        "adapterDriven": { "const": true },
+        "approvalVerifierRequired": { "const": true },
+        "stateModel": { "const": "optimistic-versioned" },
+        "receiptBindsApprovalClaims": { "const": true }
       }
     },
     "referenceRuntime": {
