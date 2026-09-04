@@ -35,6 +35,24 @@
     "stateModel": "optimistic-versioned",
     "receiptBindsApprovalClaims": true
   },
+  "integrations": {
+    "externalRuntimeModule": "./sdk/runtime.js",
+    "restModule": "./sdk/http.js",
+    "requiredMethods": ["read", "plan", "apply", "verify"],
+    "remoteRevisionBinding": true,
+    "conditionalWriteHeader": "If-Match",
+    "idempotencyHeader": "Idempotency-Key",
+    "lostResponseRecovery": true,
+    "credentialBoundary": "server-side"
+  },
+  "agentBridges": {
+    "module": "./sdk/agent-bridge.js",
+    "surfaces": ["http", "webmcp", "mcp"],
+    "webmcpHost": "document.modelContext",
+    "webmcpUntrustedContentDefault": true,
+    "mcpProtocolRevision": "2026-07-28",
+    "transportOwnedByHost": true
+  },
   "authority": {
     "module": "./sdk/authority.js",
     "storeModule": "./sdk/redis-store.js",
@@ -48,20 +66,23 @@
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
-    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js with a validated adapter, an application-controlled approval verifier, and ./sdk/authority.js backed by a durable atomic store for server commit authority."
+    "warning": "The reference engine remains for the guided Helios scenario. Real integrations should use ./sdk/runtime.js createPactExternalRuntime with a secure provider integration such as createPactRestIntegration, application-controlled approval verification, and durable server authority/journaling."
   },
   "security": {
     "humanApproval": "application-supplied verifier must validate approval and return humanPrincipal plus agentSession claims",
     "planBinding": "sha256",
-    "stateBinding": "canonical version",
-    "authority": "opaque short-lived single-use capability bound to transaction, plan, base version and verified identity claims",
-    "verification": "postconditions plus invariants plus adapter verification",
-    "receipt": "hash binds adapter, plan, versions, effects, invariants and approval claims"
+    "stateBinding": "canonical version or external provider revision",
+    "authority": "opaque short-lived single-use capability bound to transaction, plan, state revision and verified identity claims",
+    "providerCredentials": "server-side only; never expose provider secrets to WebMCP/browser agents",
+    "externalContent": "WebMCP agent bridge marks remote provider output untrusted by default",
+    "verification": "postconditions plus invariants plus adapter/integration verification",
+    "receipt": "hash binds integration/adapter, plan, versions or revisions, effects, invariants and approval claims"
   },
   "documentation": {
     "developers": "/developers/",
     "security": "/security/",
     "protocol": "/how-it-works/",
-    "playground": "/workspace/"
+    "playground": "/workspace/",
+    "agentBridges": "/docs/agent-bridges.md"
   }
 }
