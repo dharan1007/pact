@@ -306,11 +306,26 @@ export function createPactExternalRuntime(options = {}) {
   let transaction = null;
   let lease = null;
   const audit = [];
+  const integrationIdentity = { id: integration.id, version: integration.version };
+  const snapshotStatesWithPlan = new Set(['PREVIEWED', 'APPROVED', 'COMMITTED', 'COMMIT_UNCERTAIN', 'VERIFIED']);
+  const snapshotStatesWithApproval = new Set(['APPROVED', 'COMMITTED', 'COMMIT_UNCERTAIN', 'VERIFIED']);
 
   async function appendAudit(type, data = {}) {
     const prevHash = audit.at(-1)?.hash ?? 'GENESIS';
     const body = { index: audit.length, at: now(), type, data, prevHash };
     audit.push({ ...body, hash: await sha256Hex(body) });
+  }
+
+  async function validateAuditChain(value) {
+    if (!Array.isArray(value)) fail('PACT_EXTERNAL_SNAPSHOT_AUDIT_INVALID');
+    let prevHash = 'GENESIS';
+    for (let index = 0; index < value.length; index += 1) {
+      const entry = value[index];
+      if (!isPlainObject(entry) || entry.index !== index || entry.prevHash !== prevHash || typeof entry.hash !== 'string') fail('PACT_EXTERNAL_SNAPSHOT_AUDIT_INVALID');
+      const body = { index: entry.index, at: entry.at, type: entry.type, data: entry.data, prevHash: entry.prevHash };
+      if (await sha256Hex(body) !== entry.hash) fail('PACT_EXTERNAL_SNAPSHOT_AUDIT_INVALID');
+      prevHash = entry.hash;
+    }
   }
 
   function assertSignal(signal) {
@@ -344,7 +359,7 @@ export function createPactExternalRuntime(options = {}) {
     transaction = {
       id: `tx_${globalThis.crypto.randomUUID()}`,
       state: 'DRAFT',
-      integration: { id: integration.id, version: integration.version },
+      integration: clone(integrationIdentity),
       intent: clone(intent),
       createdAt: now()
     };
@@ -517,14 +532,65 @@ export function createPactExternalRuntime(options = {}) {
     return clone(transaction);
   }
 
+  function exportSnapshot() {
+    return clone({
+      schema: 1,
+      integration: integrationIdentity,
+      transaction,
+      lease,
+      audit
+    });
+  }
+
+  async function restoreSnapshot(snapshot) {
+    if (!isPlainObject(snapshot) || snapshot.schema !== 1) fail('PACT_EXTERNAL_SNAPSHOT_INVALID');
+    if (!same(snapshot.integration, integrationIdentity)) fail('PACT_EXTERNAL_SNAPSHOT_INTEGRATION_MISMATCH');
+    if (!isPlainObject(snapshot.transaction)) fail('PACT_EXTERNAL_SNAPSHOT_TRANSACTION_INVALID');
+    assertJson(snapshot.transaction, 'PACT_EXTERNAL_SNAPSHOT_TRANSACTION_INVALID');
+    const restored = clone(snapshot.transaction);
+    if (!same(restored.integration, integrationIdentity)) fail('PACT_EXTERNAL_SNAPSHOT_INTEGRATION_MISMATCH');
+    if (typeof restored.id !== 'string' || !restored.id || typeof restored.state !== 'string' || !isPlainObject(restored.intent)) fail('PACT_EXTERNAL_SNAPSHOT_TRANSACTION_INVALID');
+    const allowedStates = new Set(['DRAFT', 'PREVIEWED', 'APPROVED', 'COMMITTED', 'COMMIT_UNCERTAIN', 'VERIFIED', 'CANCELLED']);
+    if (!allowedStates.has(restored.state)) fail('PACT_EXTERNAL_SNAPSHOT_TRANSACTION_INVALID');
+
+    if (snapshotStatesWithPlan.has(restored.state)) {
+      validateAdapterPlan({ effects: restored.effects, invariants: restored.invariants, metadata: restored.metadata });
+      if (typeof restored.baseRevision !== 'string' || !restored.baseRevision || typeof restored.planHash !== 'string') fail('PACT_EXTERNAL_SNAPSHOT_TRANSACTION_INVALID');
+      if (await sha256Hex(externalPlanPayload(restored)) !== restored.planHash) fail('PACT_EXTERNAL_SNAPSHOT_PLAN_TAMPERED');
+    }
+    if (snapshotStatesWithApproval.has(restored.state)) {
+      if (!isPlainObject(restored.approvalClaims) || typeof restored.approvalClaimsHash !== 'string') fail('PACT_EXTERNAL_SNAPSHOT_APPROVAL_INVALID');
+      validateApprovalClaims(restored.approvalClaims);
+      if (await sha256Hex(restored.approvalClaims) !== restored.approvalClaimsHash) fail('PACT_EXTERNAL_SNAPSHOT_APPROVAL_TAMPERED');
+    }
+    if (restored.state === 'APPROVED') {
+      if (!isPlainObject(snapshot.lease) || snapshot.lease.txId !== restored.id || snapshot.lease.planHash !== restored.planHash || snapshot.lease.approvalClaimsHash !== restored.approvalClaimsHash || !Number.isFinite(snapshot.lease.expiresAt)) fail('PACT_EXTERNAL_SNAPSHOT_LEASE_INVALID');
+    } else if (snapshot.lease != null) {
+      fail('PACT_EXTERNAL_SNAPSHOT_LEASE_INVALID');
+    }
+    if (restored.state === 'VERIFIED') {
+      if (!isPlainObject(restored.receipt) || typeof restored.receipt.receiptHash !== 'string') fail('PACT_EXTERNAL_SNAPSHOT_RECEIPT_INVALID');
+      const receiptBody = clone(restored.receipt);
+      const receiptHash = receiptBody.receiptHash;
+      delete receiptBody.receiptHash;
+      if (await sha256Hex(receiptBody) !== receiptHash || restored.receipt.txId !== restored.id || restored.receipt.planHash !== restored.planHash) fail('PACT_EXTERNAL_SNAPSHOT_RECEIPT_TAMPERED');
+    }
+    await validateAuditChain(snapshot.audit);
+
+    transaction = restored;
+    lease = snapshot.lease == null ? null : clone(snapshot.lease);
+    audit.splice(0, audit.length, ...clone(snapshot.audit));
+    return inspect();
+  }
+
   function inspect() {
     return {
-      integration: { id: integration.id, version: integration.version },
+      integration: clone(integrationIdentity),
       transaction: clone(transaction),
       lease: clone(lease),
       audit: clone(audit)
     };
   }
 
-  return { startIntent, preview, approve, commit, verify, getReceipt, cancel, inspect };
+  return { startIntent, preview, approve, commit, verify, getReceipt, cancel, inspect, exportSnapshot, restoreSnapshot };
 }
