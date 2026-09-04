@@ -1,6 +1,38 @@
 const READ_ONLY = new Set(['pact_inspect','pact_get_transaction_receipt','pact_request_human_approval']);
 const MUTATING = new Set(['pact_start_intent','pact_preview_transaction','pact_commit_transaction','pact_verify_transaction','pact_rollback_transaction','pact_cancel_transaction','pact_autopilot_prepare','pact_autopilot_finish','pact_autopilot_resume_verify']);
 
+const TOOL_META = {
+  pact_inspect: ['Inspect PACT state', 'Read the current PACT transaction, canonical state and audit status without changing application state.'],
+  pact_start_intent: ['Start transaction', 'Start a new PACT transaction draft. This does not approve or commit any change.'],
+  pact_preview_transaction: ['Preview transaction', 'Build the exact transaction plan and safety constraints against the current canonical state.'],
+  pact_autopilot_prepare: ['Prepare transaction', 'Start and preview the transaction in one call, then stop for trusted human approval.'],
+  pact_request_human_approval: ['Request human approval', 'Report that trusted human interaction is required. This tool cannot synthesize or grant approval.'],
+  pact_commit_transaction: ['Commit approved transaction', 'Commit the exact previously approved transaction while its authority lease is valid.'],
+  pact_verify_transaction: ['Verify transaction', 'Verify committed postconditions and negative invariants and produce a tamper-evident receipt.'],
+  pact_get_transaction_receipt: ['Get transaction receipt', 'Return the verified receipt after checking its hash and audit-chain anchor.'],
+  pact_rollback_transaction: ['Rollback transaction', 'Rollback a verified transaction only when rollback preconditions still hold.'],
+  pact_cancel_transaction: ['Cancel transaction', 'Cancel a transaction before commit and revoke any active approval lease.'],
+  pact_autopilot_finish: ['Finish approved transaction', 'Commit and verify an already human-approved transaction. It never grants approval itself.'],
+  pact_autopilot_resume_verify: ['Resume verification', 'Resume verification for a transaction that was durably committed before verification completed.']
+};
+
+function clone(value) {
+  return value === undefined ? undefined : structuredClone(value);
+}
+
+export function toWebMcpResult(result) {
+  const payload = result === undefined ? null : clone(result);
+  const text = JSON.stringify(payload);
+  const envelope = {
+    content: [{ type: 'text', text }],
+    isError: false
+  };
+  // Preserve the existing direct-JS ergonomics for PACT's own playground and tests
+  // while also returning the MCP-compatible content shape expected by WebMCP agents.
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) return { ...payload, ...envelope };
+  return { value: payload, ...envelope };
+}
+
 export function createWebMcpRegistry({ engine, modelContext, onMutation = async () => {} }) {
   let controller = null;
   let names = [];
@@ -89,20 +121,24 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
     const nextNames = capabilityNames();
     try {
       for (const name of nextNames) {
+        const [title, description] = TOOL_META[name] ?? [name, `PACT transactional capability: ${name}`];
         await ctx.registerTool({
           name,
-          description: `PACT transactional capability: ${name}`,
+          title,
+          description,
           inputSchema: { type: 'object', properties: {}, additionalProperties: false },
           annotations: { readOnlyHint: READ_ONLY.has(name) },
-          execute: async () => execute(name)
+          execute: async () => toWebMcpResult(await execute(name))
         }, { signal: controller.signal });
       }
       names = nextNames;
       return { supported: true, names: [...names] };
     } catch (cause) {
-      controller.abort(); names = [];
+      controller.abort();
+      names = [];
       throw new Error('WEBMCP_REGISTRATION_FAILED', { cause });
     }
   }
+
   return { refresh, activeNames: () => [...names], dispose: () => controller?.abort() };
 }
