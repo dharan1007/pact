@@ -48,6 +48,21 @@ test('same idempotency key and payload replays the original durable result', asy
   assert.deepEqual(replay.state, first.state);
 });
 
+test('prototype-shaped idempotency keys are treated as ordinary owned keys', async () => {
+  const durable = createPactDurableStateStore({ store: new MemoryAuthorityStore(), now: () => 1000 });
+  await durable.create('tx_1', base());
+  const first = await durable.transition({
+    txId: 'tx_1', expectedState: 'PREVIEWED', nextState: 'COMMITTED',
+    idempotencyKey: 'toString', payloadHash: 'payload-a'
+  });
+  assert.equal(first.idempotentReplay, false);
+  const replay = await durable.transition({
+    txId: 'tx_1', expectedState: 'PREVIEWED', nextState: 'COMMITTED',
+    idempotencyKey: 'toString', payloadHash: 'payload-a'
+  });
+  assert.equal(replay.idempotentReplay, true);
+});
+
 test('idempotency key reuse with a different payload fails closed', async () => {
   const durable = createPactDurableStateStore({ store: new MemoryAuthorityStore() });
   await durable.create('tx_1', base());
