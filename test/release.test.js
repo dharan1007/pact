@@ -19,10 +19,12 @@ test('production build emits every product route and every referenced local asse
   }
 });
 
-test('workspace and demo use different runtime entrypoints', () => {
+test('workspace uses the canonical HTTP playground while demo keeps the reference orchestrator', () => {
   const workspace = readFileSync(path.join(root,'dist/workspace/index.html'),'utf8');
   const demo = readFileSync(path.join(root,'dist/demo/index.html'),'utf8');
-  assert.match(workspace,/workspace\.bundle\.js/);
+  assert.match(workspace,/playground\.bundle\.js/);
+  assert.match(workspace,/http\.bundle\.js/);
+  assert.doesNotMatch(workspace,/workspace\.bundle\.js/);
   assert.match(demo,/demo\.bundle\.js/);
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
