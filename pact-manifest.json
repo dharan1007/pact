@@ -45,10 +45,23 @@
     "productionStoreRequirement": "durable atomic create and compare-and-swap",
     "productionStore": "Redis-compatible HTTPS REST with atomic SET NX and Lua CAS"
   },
+  "durability": {
+    "module": "./sdk/durable-state.js",
+    "recordModel": "single-versioned-state-plus-journal",
+    "atomicity": "compare-and-swap",
+    "persistentReplayRecords": true,
+    "crashRecovery": "reload-and-validate-journal",
+    "concurrency": "single-winner-optimistic-transition"
+  },
+  "provenance": {
+    "endpoint": "/release-provenance.json",
+    "integrityManifest": "/release-manifest.json",
+    "sourceRepository": "https://github.com/dharan1007/pact"
+  },
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
-    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js with a validated adapter, an application-controlled approval verifier, and ./sdk/authority.js backed by a durable atomic store for server commit authority."
+    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js with a validated adapter, an application-controlled approval verifier, ./sdk/authority.js for commit capabilities, and ./sdk/durable-state.js backed by a durable atomic store for transaction state and replay records."
   },
   "security": {
     "humanApproval": "application-supplied verifier must validate approval and return humanPrincipal plus agentSession claims",
