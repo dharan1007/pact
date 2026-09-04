@@ -31,7 +31,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'durable-state.js', 'http.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
@@ -74,6 +74,15 @@ for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json']) {
 }
 await mkdir(path.join(dist, 'docs'), { recursive: true });
 await cp(path.join(root, 'docs/agent-bridges.md'), path.join(dist, 'docs/agent-bridges.md'));
+
+const sourceCommit = process.env.PACT_SOURCE_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || null;
+await writeFile(path.join(dist, 'release-provenance.json'), JSON.stringify({
+  schema: 1,
+  sourceCommit,
+  sourceRepository: 'https://github.com/dharan1007/pact',
+  buildContract: 'pact-release-v1',
+  commitProvenance: sourceCommit ? 'declared-by-build-environment' : 'unavailable'
+}, null, 2) + '\n');
 
 async function walk(dir, prefix='') {
   const out=[];
