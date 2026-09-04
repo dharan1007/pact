@@ -8,7 +8,8 @@
     "hostPreference": ["document.modelContext"],
     "transport": "in-page",
     "toolsOnly": true,
-    "requiresSecureContext": true
+    "requiresSecureContext": true,
+    "annotations": ["readOnlyHint", "untrustedContentHint"]
   },
   "http": {
     "connectorModule": "./http.bundle.js",
@@ -34,16 +35,24 @@
     "stateModel": "optimistic-versioned",
     "receiptBindsApprovalClaims": true
   },
+  "authority": {
+    "module": "./sdk/authority.js",
+    "atomicStoreRequired": true,
+    "singleUseCommitCapability": true,
+    "capabilityBinding": ["txId", "planHash", "baseVersion", "humanPrincipal", "agentSession"],
+    "idempotentReplay": "same-key-only",
+    "productionStoreRequirement": "durable atomic create and compare-and-swap"
+  },
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
-    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js with a validated adapter and an application-controlled approval verifier."
+    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js with a validated adapter, an application-controlled approval verifier, and ./sdk/authority.js backed by a durable atomic store for server commit authority."
   },
   "security": {
     "humanApproval": "application-supplied verifier must validate approval and return humanPrincipal plus agentSession claims",
     "planBinding": "sha256",
     "stateBinding": "canonical version",
-    "authority": "short-lived approval lease bound to plan hash and approval-claims hash",
+    "authority": "opaque short-lived single-use capability bound to transaction, plan, base version and verified identity claims",
     "verification": "postconditions plus invariants plus adapter verification",
     "receipt": "hash binds adapter, plan, versions, effects, invariants and approval claims"
   },

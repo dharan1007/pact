@@ -27,24 +27,27 @@ test('workspace and demo use different runtime entrypoints', () => {
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships the generic adapter runtime as an importable ESM SDK with manifest discovery', () => {
+test('release ships the generic runtime and one-shot authority as importable ESM SDK modules with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'http.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'http.js', 'webmcp.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   const manifest = JSON.parse(readFileSync(path.join(root, 'dist/pact-manifest.json'), 'utf8'));
   assert.equal(manifest.runtime.module, './sdk/runtime.js');
   assert.equal(manifest.runtime.adapterDriven, true);
   assert.equal(manifest.runtime.approvalVerifierRequired, true);
+  assert.equal(manifest.authority.module, './sdk/authority.js');
+  assert.equal(manifest.authority.atomicStoreRequired, true);
+  assert.equal(manifest.authority.singleUseCommitCapability, true);
 });
 
 test('identical source produces an identical release manifest', () => {
   const first = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(first.status, 0, first.stderr || first.stdout);
-  const manifestA = readFileSync(path.join(root, 'dist/release-manifest.json'), 'utf8');
+  const manifestA = readFileSync(path.join(root,'dist/release-manifest.json'),'utf8');
   const second = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(second.status, 0, second.stderr || second.stdout);
-  const manifestB = readFileSync(path.join(root, 'dist/release-manifest.json'), 'utf8');
+  const manifestB = readFileSync(path.join(root,'dist/release-manifest.json'),'utf8');
   assert.equal(manifestB, manifestA);
 });

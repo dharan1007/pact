@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -14,12 +14,18 @@
     "webmcp": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hostPreference", "transport", "toolsOnly", "requiresSecureContext"],
+      "required": ["hostPreference", "transport", "toolsOnly", "requiresSecureContext", "annotations"],
       "properties": {
         "hostPreference": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "transport": { "const": "in-page" },
         "toolsOnly": { "type": "boolean" },
-        "requiresSecureContext": { "type": "boolean" }
+        "requiresSecureContext": { "type": "boolean" },
+        "annotations": {
+          "type": "array",
+          "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }],
+          "minItems": 2,
+          "maxItems": 2
+        }
       }
     },
     "http": {
@@ -59,6 +65,30 @@
         "approvalVerifierRequired": { "const": true },
         "stateModel": { "const": "optimistic-versioned" },
         "receiptBindsApprovalClaims": { "const": true }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "atomicStoreRequired", "singleUseCommitCapability", "capabilityBinding", "idempotentReplay", "productionStoreRequirement"],
+      "properties": {
+        "module": { "const": "./sdk/authority.js" },
+        "atomicStoreRequired": { "const": true },
+        "singleUseCommitCapability": { "const": true },
+        "capabilityBinding": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "txId" },
+            { "const": "planHash" },
+            { "const": "baseVersion" },
+            { "const": "humanPrincipal" },
+            { "const": "agentSession" }
+          ],
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "idempotentReplay": { "const": "same-key-only" },
+        "productionStoreRequirement": { "type": "string", "minLength": 1 }
       }
     },
     "referenceRuntime": {

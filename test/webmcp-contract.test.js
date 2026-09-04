@@ -8,7 +8,7 @@ test('WebMCP execute results preserve structured JavaScript values for user-agen
   assert.deepEqual(out, { state: 'PREVIEWED', txId: 'tx_1' });
 });
 
-test('registered tools expose current WebMCP annotations and execution cancellation options', async () => {
+test('registered tools expose only current WebMCP annotations and execution cancellation options', async () => {
   const idleEngine = createPactEngine();
   const idleCalls = [];
   const modelContext = { registerTool(tool, options) { idleCalls.push({ tool, options }); } };
@@ -23,16 +23,14 @@ test('registered tools expose current WebMCP annotations and execution cancellat
   assert.deepEqual(inspect.inputSchema, { type: 'object', properties: {}, additionalProperties: false });
   assert.deepEqual(inspect.annotations, {
     readOnlyHint: true,
-    untrustedContentHint: false,
-    consequentialHint: false
+    untrustedContentHint: false
   });
   assert.deepEqual(await inspect.execute({}, { signal: new AbortController().signal }), idleEngine.inspect());
 
   const start = idleCalls.find(({ tool }) => tool.name === 'pact_start_intent').tool;
   assert.deepEqual(start.annotations, {
     readOnlyHint: false,
-    untrustedContentHint: false,
-    consequentialHint: false
+    untrustedContentHint: false
   });
 
   const aborted = new AbortController();
@@ -52,7 +50,6 @@ test('registered tools expose current WebMCP annotations and execution cancellat
   const commit = approvedCalls.find(({ tool }) => tool.name === 'pact_commit_transaction').tool;
   assert.deepEqual(commit.annotations, {
     readOnlyHint: false,
-    untrustedContentHint: false,
-    consequentialHint: true
+    untrustedContentHint: false
   });
 });

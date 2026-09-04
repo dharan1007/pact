@@ -1,5 +1,4 @@
 const READ_ONLY = new Set(['pact_inspect','pact_get_transaction_receipt','pact_request_human_approval']);
-const CONSEQUENTIAL = new Set(['pact_commit_transaction','pact_rollback_transaction','pact_autopilot_finish']);
 const MUTATING = new Set(['pact_start_intent','pact_preview_transaction','pact_commit_transaction','pact_verify_transaction','pact_rollback_transaction','pact_cancel_transaction','pact_autopilot_prepare','pact_autopilot_finish','pact_autopilot_resume_verify']);
 
 const TOOL_META = {
@@ -129,8 +128,7 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
           inputSchema: { type: 'object', properties: {}, additionalProperties: false },
           annotations: {
             readOnlyHint: READ_ONLY.has(name),
-            untrustedContentHint: false,
-            consequentialHint: CONSEQUENTIAL.has(name)
+            untrustedContentHint: false
           },
           execute: async (_input, options = {}) => toWebMcpResult(await execute(name, options.signal))
         }, { signal: controller.signal });

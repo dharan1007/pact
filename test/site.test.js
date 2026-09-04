@@ -29,6 +29,7 @@ test('developers page documents the reusable SDK, authority boundary and current
   const html = await readFile('pages/developers.html','utf8');
   assert.match(html, /\/sdk\/adapter\.js/);
   assert.match(html, /\/sdk\/runtime\.js/);
+  assert.match(html, /\/sdk\/authority\.js/);
   assert.match(html, /verifyApproval/);
   assert.match(html, /humanPrincipal/);
   assert.match(html, /agentSession/);
@@ -36,10 +37,20 @@ test('developers page documents the reusable SDK, authority boundary and current
   assert.match(html, /pact-manifest\.json/);
 });
 
+test('developers page shows the exact HTTP connector API and current WebMCP annotation surface', async () => {
+  const html = await readFile('pages/developers.html','utf8');
+  assert.match(html, /baseUrl: 'https:\/\/example\.com'/);
+  assert.match(html, /api\.commit\(\{ txId \}, txId\)/);
+  assert.doesNotMatch(html, /endpoint: 'https:\/\/example\.com\/api\/pact'/);
+  assert.doesNotMatch(html, /annotated as consequential/i);
+  assert.match(html, /readOnlyHint/);
+  assert.match(html, /untrustedContentHint/);
+});
+
 test('developers page documents HTTP idempotency and durable-authority limitation without claiming the static deployment provides it', async () => {
   const html = await readFile('pages/developers.html','utf8');
   assert.match(html, /idempotency key/i);
-  assert.match(html, /persist transaction state, replay protection and idempotency records durably/i);
+  assert.match(html, /durable atomic store/i);
   assert.match(html, /static reference deployment does not provide that guarantee yet/i);
 });
 
