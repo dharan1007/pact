@@ -48,7 +48,7 @@ test('authority issues opaque capabilities bound to transaction, plan, version a
   }), /PACT_AUTHORITY_CAPABILITY_EXPIRED/);
 });
 
-test('commit authorization is atomic, replay-safe and idempotent for the same key', async () => {
+test('commit authorization is atomic, replay-safe and reports same-key replay explicitly', async () => {
   const authority = createPactAuthority({
     store: new MemoryAuthorityStore(),
     verifyApproval: approvalVerifier,
@@ -59,8 +59,10 @@ test('commit authorization is atomic, replay-safe and idempotent for the same ke
 
   const first = await authority.authorizeCommit({ token: issued.token, txId: 'tx_2', planHash: 'plan_xyz', baseVersion: 4, idempotencyKey: 'idem-A' });
   const replay = await authority.authorizeCommit({ token: issued.token, txId: 'tx_2', planHash: 'plan_xyz', baseVersion: 4, idempotencyKey: 'idem-A' });
-  assert.deepEqual(replay, first);
   assert.equal(first.idempotentReplay, false);
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.authorizationId, first.authorizationId);
+  assert.equal(replay.idempotencyKey, first.idempotencyKey);
 
   await assert.rejects(() => authority.authorizeCommit({ token: issued.token, txId: 'tx_2', planHash: 'plan_xyz', baseVersion: 4, idempotencyKey: 'idem-B' }), /PACT_AUTHORITY_CAPABILITY_ALREADY_CONSUMED/);
   await assert.rejects(() => authority.authorizeCommit({ token: issued.token, txId: 'tx_other', planHash: 'plan_xyz', baseVersion: 4, idempotencyKey: 'idem-A' }), /PACT_AUTHORITY_BINDING_MISMATCH/);
