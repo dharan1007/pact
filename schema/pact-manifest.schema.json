@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "provenance", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -20,12 +20,7 @@
         "transport": { "const": "in-page" },
         "toolsOnly": { "type": "boolean" },
         "requiresSecureContext": { "type": "boolean" },
-        "annotations": {
-          "type": "array",
-          "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }],
-          "minItems": 2,
-          "maxItems": 2
-        }
+        "annotations": { "type": "array", "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }], "minItems": 2, "maxItems": 2 }
       }
     },
     "http": {
@@ -76,21 +71,33 @@
         "storeModule": { "const": "./sdk/redis-store.js" },
         "atomicStoreRequired": { "const": true },
         "singleUseCommitCapability": { "const": true },
-        "capabilityBinding": {
-          "type": "array",
-          "prefixItems": [
-            { "const": "txId" },
-            { "const": "planHash" },
-            { "const": "baseVersion" },
-            { "const": "humanPrincipal" },
-            { "const": "agentSession" }
-          ],
-          "minItems": 5,
-          "maxItems": 5
-        },
+        "capabilityBinding": { "type": "array", "prefixItems": [{ "const": "txId" }, { "const": "planHash" }, { "const": "baseVersion" }, { "const": "humanPrincipal" }, { "const": "agentSession" }], "minItems": 5, "maxItems": 5 },
         "idempotentReplay": { "const": "same-key-only" },
         "productionStoreRequirement": { "type": "string", "minLength": 1 },
         "productionStore": { "type": "string", "minLength": 1 }
+      }
+    },
+    "durability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "recordModel", "atomicity", "persistentReplayRecords", "crashRecovery", "concurrency"],
+      "properties": {
+        "module": { "const": "./sdk/durable-state.js" },
+        "recordModel": { "const": "single-versioned-state-plus-journal" },
+        "atomicity": { "const": "compare-and-swap" },
+        "persistentReplayRecords": { "const": true },
+        "crashRecovery": { "const": "reload-and-validate-journal" },
+        "concurrency": { "const": "single-winner-optimistic-transition" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint", "integrityManifest", "sourceRepository"],
+      "properties": {
+        "endpoint": { "const": "/release-provenance.json" },
+        "integrityManifest": { "const": "/release-manifest.json" },
+        "sourceRepository": { "const": "https://github.com/dharan1007/pact" }
       }
     },
     "referenceRuntime": {
