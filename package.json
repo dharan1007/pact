@@ -1,0 +1,12 @@
+{
+  "name": "pact-webmcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/*.js && node --check scripts/*.mjs",
+    "build": "node scripts/build.mjs",
+    "verify": "npm test && npm run check && npm run build && for f in dist/*.bundle.js; do node --check \"$f\" || exit 1; done"
+  }
+}
