@@ -1,4 +1,5 @@
 const READ_ONLY = new Set(['pact_inspect','pact_get_transaction_receipt','pact_request_human_approval']);
+const CONSEQUENTIAL = new Set(['pact_commit_transaction','pact_rollback_transaction','pact_autopilot_finish']);
 const MUTATING = new Set(['pact_start_intent','pact_preview_transaction','pact_commit_transaction','pact_verify_transaction','pact_rollback_transaction','pact_cancel_transaction','pact_autopilot_prepare','pact_autopilot_finish','pact_autopilot_resume_verify']);
 
 const TOOL_META = {
@@ -20,23 +21,18 @@ function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
+function assertExecutionActive(signal) {
+  if (signal?.aborted) throw new Error('WEBMCP_EXECUTION_ABORTED', { cause: signal.reason });
+}
+
 export function toWebMcpResult(result) {
-  const payload = result === undefined ? null : clone(result);
-  const text = JSON.stringify(payload);
-  const envelope = {
-    content: [{ type: 'text', text }],
-    isError: false
-  };
-  // Preserve the existing direct-JS ergonomics for PACT's own playground and tests
-  // while also returning the MCP-compatible content shape expected by WebMCP agents.
-  if (payload && typeof payload === 'object' && !Array.isArray(payload)) return { ...payload, ...envelope };
-  return { value: payload, ...envelope };
+  return clone(result);
 }
 
 export function createWebMcpRegistry({ engine, modelContext, onMutation = async () => {} }) {
   let controller = null;
   let names = [];
-  const context = () => modelContext ?? globalThis.document?.modelContext ?? globalThis.navigator?.modelContext ?? null;
+  const context = () => modelContext ?? globalThis.document?.modelContext ?? null;
 
   function capabilityNames() {
     const expert = engine.activeCapabilities();
@@ -48,7 +44,8 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
     return [...automated, ...expert];
   }
 
-  async function executeAutopilotFinish() {
+  async function executeAutopilotFinish(signal) {
+    assertExecutionActive(signal);
     const approved = engine.exportSnapshot();
     let committed;
     try {
@@ -60,6 +57,7 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
       throw error;
     }
 
+    assertExecutionActive(signal);
     try {
       const receipt = await engine.verify();
       const result = { state: 'VERIFIED', receipt };
@@ -71,8 +69,9 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
     }
   }
 
-  async function execute(name) {
-    if (name === 'pact_autopilot_finish') return executeAutopilotFinish();
+  async function execute(name, signal) {
+    assertExecutionActive(signal);
+    if (name === 'pact_autopilot_finish') return executeAutopilotFinish(signal);
     if (name === 'pact_autopilot_resume_verify') {
       const before = engine.exportSnapshot();
       try {
@@ -104,6 +103,7 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
       else if (name === 'pact_rollback_transaction') result = await engine.rollback();
       else if (name === 'pact_cancel_transaction') result = engine.cancel();
       else throw new Error('UNKNOWN_TOOL');
+      assertExecutionActive(signal);
       if (mutating) await onMutation({ name, result, snapshot: engine.exportSnapshot() });
       return result;
     } catch (error) {
@@ -127,8 +127,12 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
           title,
           description,
           inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-          annotations: { readOnlyHint: READ_ONLY.has(name) },
-          execute: async () => toWebMcpResult(await execute(name))
+          annotations: {
+            readOnlyHint: READ_ONLY.has(name),
+            untrustedContentHint: false,
+            consequentialHint: CONSEQUENTIAL.has(name)
+          },
+          execute: async (_input, options = {}) => toWebMcpResult(await execute(name, options.signal))
         }, { signal: controller.signal });
       }
       names = nextNames;

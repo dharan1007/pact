@@ -5,7 +5,7 @@
   "kind": "transactional-webmcp",
   "status": "experimental",
   "webmcp": {
-    "hostPreference": ["document.modelContext", "navigator.modelContext"],
+    "hostPreference": ["document.modelContext"],
     "transport": "in-page",
     "toolsOnly": true,
     "requiresSecureContext": true
