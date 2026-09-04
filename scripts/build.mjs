@@ -18,6 +18,7 @@ const bundles = {
   'engine.bundle.js': moduleScope(await source('src/engine.js'), ['createPactEngine']),
   'persistence.bundle.js': moduleScope(await source('src/persistence.js'), ['LocalStorageSnapshotStore']),
   'webmcp.bundle.js': moduleScope(await source('src/webmcp.js'), ['createWebMcpRegistry']),
+  'http.bundle.js': moduleScope(await source('src/http.js'), ['createPactHttpConnector']),
   'orchestrator.bundle.js': moduleScope(await source('src/orchestrator.js'), ['createPactOrchestrator']),
   'site.bundle.js': stripImports(await source('src/site.js')),
   'workspace.bundle.js': stripImports(await source('src/main.js')),
@@ -58,7 +59,9 @@ for (const route of routes) {
   await mkdir(path.dirname(out), { recursive: true });
   await writeFile(out, transformHtml(await source(route.src)));
 }
-for (const file of ['vercel.json', 'README.md', 'LICENSE']) await cp(path.join(root, file), path.join(dist, file));
+for (const file of ['vercel.json', 'README.md', 'LICENSE', 'pact-manifest.json']) await cp(path.join(root, file), path.join(dist, file));
+await mkdir(path.join(dist, 'schema'), { recursive: true });
+await cp(path.join(root, 'schema/pact-manifest.schema.json'), path.join(dist, 'schema/pact-manifest.schema.json'));
 
 async function walk(dir, prefix='') {
   const out=[];
@@ -72,5 +75,5 @@ async function walk(dir, prefix='') {
 const files = await walk(dist);
 const hashes = {};
 for (const file of files) hashes[file] = createHash('sha256').update(await readFile(path.join(dist,file))).digest('hex');
-await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:4, files:hashes }, null, 2)+'\n');
+await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:5, files:hashes }, null, 2)+'\n');
 console.log(`Built ${files.length + 1} release files into dist/`);
