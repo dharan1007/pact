@@ -29,18 +29,29 @@ test('consequential agent calls fail closed without idempotency keys', async () 
   await assert.rejects(() => catalog.execute('pact_rollback_transaction', { payload: { transactionId: 'tx_1' }, idempotencyKey: '  ' }), /PACT_AGENT_IDEMPOTENCY_KEY_REQUIRED/);
 });
 
-test('WebMCP bridge registers current document modelContext tool shape and disposes by abort', async () => {
+test('WebMCP bridge treats remote provider output as untrusted content by default and disposes by abort', async () => {
   const registrations = [];
   const modelContext = { async registerTool(tool, options) { registrations.push({ tool, options }); } };
   const bridge = await registerPactWebMcpBridge({ connector: connector(), modelContext });
   assert.equal(bridge.supported, true);
   assert.equal(registrations.length, 8);
-  assert.equal(registrations[0].tool.annotations.untrustedContentHint, false);
+  assert.equal(registrations[0].tool.annotations.untrustedContentHint, true);
   assert.equal(registrations[0].options.signal.aborted, false);
   const output = await registrations.find(r => r.tool.name === 'pact_preview_transaction').tool.execute({ payload: { intent: { type: 'real' } } }, {});
   assert.equal(output.op, 'preview');
   bridge.dispose();
   assert.equal(registrations[0].options.signal.aborted, true);
+});
+
+test('WebMCP bridge allows an application to explicitly mark a fully trusted backend', async () => {
+  const registrations = [];
+  const modelContext = { async registerTool(tool) { registrations.push(tool); } };
+  await registerPactWebMcpBridge({ connector: connector(), modelContext, untrustedContentHint: false });
+  assert.equal(registrations.every(tool => tool.annotations.untrustedContentHint === false), true);
+  await assert.rejects(
+    () => registerPactWebMcpBridge({ connector: connector(), modelContext, untrustedContentHint: 'no' }),
+    /PACT_AGENT_INVALID_UNTRUSTED_CONTENT_HINT/
+  );
 });
 
 test('MCP bridge registers the same tools and emits MCP content plus structuredContent', async () => {
