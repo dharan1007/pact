@@ -51,6 +51,19 @@ test('developers page shows the exact HTTP connector API and current WebMCP anno
   assert.match(html, /untrustedContentHint/);
 });
 
+test('developers page documents real provider execution and shared agent bridges', async () => {
+  const html = await readFile('pages/developers.html','utf8');
+  assert.match(html, /createPactExternalRuntime/);
+  assert.match(html, /createPactRestIntegration/);
+  assert.match(html, /If-Match/);
+  assert.match(html, /\/sdk\/agent-bridge\.js/);
+  assert.match(html, /registerPactWebMcpBridge/);
+  assert.match(html, /registerPactMcpBridge/);
+  assert.match(html, /2026-07-28/);
+  assert.match(html, /untrustedContentHint: true/);
+  assert.match(html, /server-side/i);
+});
+
 test('developers page documents HTTP idempotency and durable-authority limitation without claiming the static deployment provides it', async () => {
   const html = await readFile('pages/developers.html','utf8');
   assert.match(html, /idempotency key/i);
