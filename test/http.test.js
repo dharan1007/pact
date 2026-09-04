@@ -59,3 +59,35 @@ test('HTTP connector fails closed on non-object success bodies', async () => {
   });
   await assert.rejects(() => connector.inspect({}), /PACT_HTTP_INVALID_RESPONSE/);
 });
+
+test('HTTP connector propagates caller cancellation without misreporting it as a timeout', async () => {
+  const caller = new AbortController();
+  const connector = createPactHttpConnector({
+    baseUrl: 'https://pact.example',
+    timeoutMs: 10_000,
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    })
+  });
+
+  const pending = connector.request('inspect', {}, { signal: caller.signal });
+  caller.abort(new Error('user cancelled'));
+
+  await assert.rejects(pending, error => {
+    assert.equal(error.message, 'PACT_HTTP_ABORTED');
+    assert.equal(error.cause?.message, 'user cancelled');
+    return true;
+  });
+});
+
+test('HTTP connector keeps timeout failures distinct from caller cancellation', async () => {
+  const connector = createPactHttpConnector({
+    baseUrl: 'https://pact.example',
+    timeoutMs: 5,
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    })
+  });
+
+  await assert.rejects(connector.inspect({}), /PACT_HTTP_TIMEOUT/);
+});
