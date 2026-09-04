@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPactHttpHandler } from '../src/http-handler.js';
+import { createPactHttpConnector } from '../src/http.js';
 
 function makeResponse() {
   return {
@@ -100,4 +101,38 @@ test('PACT HTTP handler does not leak unexpected exception messages', async () =
   assert.equal(response.statusCode, 500);
   assert.deepEqual(response.body, { error: { code: 'PACT_HTTP_INTERNAL_ERROR' } });
   assert.doesNotMatch(JSON.stringify(response.body), /hunter2/);
+});
+
+test('published HTTP connector interoperates with canonical server envelope and commit idempotency header', async () => {
+  const { service, calls } = makeService();
+  const handler = createPactHttpHandler({ service });
+  const fetchImpl = async (_url, options) => {
+    const requestBody = JSON.parse(options.body);
+    const response = makeResponse();
+    await handler({
+      method: options.method,
+      headers: options.headers,
+      body: requestBody
+    }, response);
+    return {
+      ok: response.statusCode >= 200 && response.statusCode < 300,
+      status: response.statusCode,
+      async text() { return JSON.stringify(response.body); }
+    };
+  };
+  const connector = createPactHttpConnector({ baseUrl: 'https://pact.example', fetchImpl });
+
+  await connector.preview({ adapter: { id: 'example.flags', version: '1.0.0' }, intent: { key: 'beta', value: true } });
+  await connector.commit({ transactionId: 'tx_1', capabilityToken: 'cap_1' }, 'idem-from-sdk');
+
+  assert.deepEqual(calls, [
+    {
+      action: 'preview',
+      payload: { adapter: { id: 'example.flags', version: '1.0.0' }, intent: { key: 'beta', value: true } }
+    },
+    {
+      action: 'commit',
+      payload: { transactionId: 'tx_1', capabilityToken: 'cap_1', idempotencyKey: 'idem-from-sdk' }
+    }
+  ]);
 });
