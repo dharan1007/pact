@@ -16,12 +16,21 @@
     "method": "POST",
     "requestEnvelope": { "operation": "string", "payload": "object" },
     "operations": ["inspect", "preview", "approve", "commit", "verify", "receipt", "rollback", "cancel"],
-    "idempotencyHeader": "Idempotency-Key"
+    "idempotencyHeader": "Idempotency-Key",
+    "idempotencyRequiredFor": ["commit", "rollback"]
+  },
+  "adapterContract": {
+    "module": "./adapter.bundle.js",
+    "schema": "./schema/pact-adapter.schema.json",
+    "requiredMethods": ["describe", "plan", "verify"],
+    "planModel": "declarative-effects-and-invariants",
+    "maxEffects": 256,
+    "maxInvariants": 256
   },
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
-    "warning": "The bundled reference engine demonstrates PACT transaction semantics but is not a generic production adapter runtime."
+    "warning": "The bundled reference engine demonstrates PACT transaction semantics but is not yet wired to execute arbitrary adapters end-to-end."
   },
   "security": {
     "humanApproval": "trusted UI gesture required",
