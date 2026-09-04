@@ -27,10 +27,10 @@ test('workspace and demo use different runtime entrypoints', () => {
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships runtime, authority, real integrations, durable journal and agent bridges with manifest discovery', () => {
+test('release ships runtime, authority, canonical service, real integrations, durable journal and agent bridges with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'journal.js', 'http.js', 'webmcp.js', 'agent-bridge.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'journal.js', 'service.js', 'http.js', 'webmcp.js', 'agent-bridge.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   assert.equal(existsSync(path.join(root, 'dist/docs/agent-bridges.md')), true, 'missing agent bridge integration guide');
@@ -42,6 +42,9 @@ test('release ships runtime, authority, real integrations, durable journal and a
   assert.equal(manifest.authority.storeModule, './sdk/redis-store.js');
   assert.equal(manifest.authority.atomicStoreRequired, true);
   assert.equal(manifest.authority.singleUseCommitCapability, true);
+  assert.equal(manifest.server.serviceModule, './sdk/service.js');
+  assert.equal(manifest.server.apiHandlerExport, 'createPactApiHandler');
+  assert.equal(manifest.server.authenticationRequired, true);
   assert.equal(manifest.server.journalModule, './sdk/journal.js');
   assert.deepEqual(manifest.server.storeContract, ['get', 'create', 'compareAndSwap']);
   assert.equal(manifest.server.crossInstanceClaims, true);
