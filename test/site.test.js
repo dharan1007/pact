@@ -10,13 +10,15 @@ const pages = [
   ['pages/security.html','Trust without blind access'],
   ['pages/developers.html','Use PACT as a runtime, not a demo.']
 ];
-const nav = ['Overview','Live Demo','Workspace','How It Works','Security','Developers'];
+const nav = ['Overview','Live Demo','How It Works','Security','Developers'];
 
 test('all product routes exist and explain their purpose', async () => {
   for (const [file, marker] of pages) {
     const html = await readFile(file,'utf8');
     assert.match(html, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
     for (const item of nav) assert.match(html, new RegExp(item));
+    assert.match(html, /href="\/workspace\/"/);
+    assert.match(html, /(?:Workspace|API Playground)/);
   }
 });
 
