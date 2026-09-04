@@ -1,0 +1,40 @@
+{
+  "$schema": "./schema/pact-manifest.schema.json",
+  "schemaVersion": "1.0",
+  "name": "PACT",
+  "kind": "transactional-webmcp",
+  "status": "experimental",
+  "webmcp": {
+    "hostPreference": ["document.modelContext", "navigator.modelContext"],
+    "transport": "in-page",
+    "toolsOnly": true,
+    "requiresSecureContext": true
+  },
+  "http": {
+    "connectorModule": "./http.bundle.js",
+    "endpoint": "/api/pact",
+    "method": "POST",
+    "requestEnvelope": { "operation": "string", "payload": "object" },
+    "operations": ["inspect", "preview", "approve", "commit", "verify", "receipt", "rollback", "cancel"],
+    "idempotencyHeader": "Idempotency-Key"
+  },
+  "referenceRuntime": {
+    "module": "./engine.bundle.js",
+    "scope": "reference-domain-only",
+    "warning": "The bundled reference engine demonstrates PACT transaction semantics but is not a generic production adapter runtime."
+  },
+  "security": {
+    "humanApproval": "trusted UI gesture required",
+    "planBinding": "sha256",
+    "stateBinding": "canonical version",
+    "authority": "short-lived approval lease",
+    "verification": "postconditions plus negative invariants",
+    "receipt": "hash plus audit-chain anchor"
+  },
+  "documentation": {
+    "developers": "/developers/",
+    "security": "/security/",
+    "protocol": "/how-it-works/",
+    "playground": "/workspace/"
+  }
+}
