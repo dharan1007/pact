@@ -117,7 +117,9 @@ export function createPactAuthority({ store, verifyApproval, now = () => Date.no
       if (now() > record.expiresAt) fail('PACT_AUTHORITY_CAPABILITY_EXPIRED');
 
       if (record.consumed) {
-        if (record.idempotencyKey === idempotencyKey) return clone(record.authorization);
+        if (record.idempotencyKey === idempotencyKey) {
+          return clone({ ...record.authorization, idempotentReplay: true });
+        }
         fail('PACT_AUTHORITY_CAPABILITY_ALREADY_CONSUMED');
       }
 
