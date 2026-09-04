@@ -105,3 +105,149 @@ export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch,
     cancel: (payload, options) => request('cancel', payload, options)
   };
 }
+
+function assertRestFunction(value, code) {
+  if (typeof value !== 'function') throw new Error(code);
+  return value;
+}
+
+function assertRestPath(baseUrl, value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) throw new Error('PACT_REST_INVALID_RESOURCE_PATH');
+  const base = new URL(`${baseUrl}/`);
+  const resolved = new URL(value, base);
+  if (resolved.origin !== base.origin) throw new Error('PACT_REST_INVALID_RESOURCE_PATH');
+  return resolved.toString();
+}
+
+function assertRestObject(value, code) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(code);
+  return value;
+}
+
+function cloneJson(value, code) {
+  try {
+    const text = JSON.stringify(value);
+    if (text === undefined) throw new Error(code);
+    return JSON.parse(text);
+  } catch {
+    throw new Error(code);
+  }
+}
+
+function responseHeader(response, name) {
+  return response?.headers?.get?.(name) ?? response?.headers?.get?.(name.toLowerCase()) ?? null;
+}
+
+function defaultRevision({ response, body }) {
+  const etag = responseHeader(response, 'etag');
+  if (typeof etag === 'string' && etag.trim()) return etag;
+  const candidate = body?.revision ?? body?.version;
+  if ((typeof candidate === 'string' && candidate.trim()) || Number.isFinite(candidate)) return String(candidate);
+  throw new Error('PACT_REST_REVISION_REQUIRED');
+}
+
+function normalizeRestHeaders(input) {
+  if (input == null) return {};
+  assertRestObject(input, 'PACT_REST_INVALID_HEADERS');
+  const out = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value !== 'string') throw new Error('PACT_REST_INVALID_HEADERS');
+    out[key.toLowerCase()] = value;
+  }
+  return out;
+}
+
+async function parseRestResponse(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try { return JSON.parse(text); }
+  catch { throw new Error('PACT_REST_INVALID_JSON_RESPONSE'); }
+}
+
+export function createPactRestIntegration({
+  id,
+  version,
+  baseUrl,
+  fetchImpl = globalThis.fetch,
+  headers = {},
+  resourcePath,
+  plan,
+  buildApply,
+  verify,
+  stateFrom = body => body,
+  revisionFrom = defaultRevision
+}) {
+  if (typeof id !== 'string' || !id.trim()) throw new Error('PACT_REST_ID_REQUIRED');
+  if (typeof version !== 'string' || !version.trim()) throw new Error('PACT_REST_VERSION_REQUIRED');
+  if (typeof fetchImpl !== 'function') throw new Error('PACT_REST_FETCH_REQUIRED');
+  const origin = assertBaseUrl(baseUrl);
+  const readPath = assertRestFunction(resourcePath, 'PACT_REST_RESOURCE_PATH_REQUIRED');
+  const planFn = assertRestFunction(plan, 'PACT_REST_PLAN_REQUIRED');
+  const applyBuilder = assertRestFunction(buildApply, 'PACT_REST_BUILD_APPLY_REQUIRED');
+  const verifyFn = assertRestFunction(verify, 'PACT_REST_VERIFY_REQUIRED');
+  const stateMapper = assertRestFunction(stateFrom, 'PACT_REST_STATE_MAPPER_REQUIRED');
+  const revisionMapper = assertRestFunction(revisionFrom, 'PACT_REST_REVISION_MAPPER_REQUIRED');
+  const configuredHeaders = normalizeRestHeaders(headers);
+
+  async function request({ method, path, body, requestHeaders = {}, signal }) {
+    const url = assertRestPath(origin, path);
+    const normalized = normalizeRestHeaders(requestHeaders);
+    const finalHeaders = {
+      accept: 'application/json',
+      ...configuredHeaders,
+      ...normalized
+    };
+    const init = { method, headers: finalHeaders, signal: assertAbortSignal(signal) ?? undefined };
+    if (body !== undefined) {
+      finalHeaders['content-type'] = 'application/json';
+      init.body = JSON.stringify(cloneJson(body, 'PACT_REST_BODY_MUST_BE_JSON'));
+    }
+    const response = await fetchImpl(url, init);
+    const parsed = await parseRestResponse(response);
+    if (!response.ok) {
+      const error = new Error(parsed?.error?.code || parsed?.code || `PACT_REST_HTTP_${response.status}`);
+      error.status = response.status;
+      error.details = parsed;
+      throw error;
+    }
+    return { response, body: parsed };
+  }
+
+  return Object.freeze({
+    id: id.trim(),
+    version: version.trim(),
+    async read(context = {}) {
+      const path = await readPath(context);
+      const { response, body } = await request({ method: 'GET', path, signal: context.signal });
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('PACT_REST_INVALID_STATE_RESPONSE');
+      const state = await stateMapper(cloneJson(body, 'PACT_REST_INVALID_STATE_RESPONSE'), { response, context });
+      assertRestObject(state, 'PACT_REST_INVALID_STATE_RESPONSE');
+      const revision = await revisionMapper({ response, body: cloneJson(body, 'PACT_REST_INVALID_STATE_RESPONSE'), state: cloneJson(state, 'PACT_REST_INVALID_STATE_RESPONSE'), context });
+      if (typeof revision !== 'string' || !revision.trim()) throw new Error('PACT_REST_REVISION_REQUIRED');
+      return { revision, state: cloneJson(state, 'PACT_REST_INVALID_STATE_RESPONSE') };
+    },
+    async plan(context) {
+      return planFn(context);
+    },
+    async apply(context = {}) {
+      const idempotencyKey = typeof context.idempotencyKey === 'string' ? context.idempotencyKey.trim() : '';
+      if (!idempotencyKey) throw new Error('PACT_REST_IDEMPOTENCY_KEY_REQUIRED');
+      if (idempotencyKey.length > 256) throw new Error('PACT_REST_INVALID_IDEMPOTENCY_KEY');
+      if (typeof context.revision !== 'string' || !context.revision.trim()) throw new Error('PACT_REST_REVISION_REQUIRED');
+      const spec = assertRestObject(await applyBuilder(context), 'PACT_REST_INVALID_APPLY_SPEC');
+      const method = typeof spec.method === 'string' ? spec.method.toUpperCase() : '';
+      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw new Error('PACT_REST_INVALID_APPLY_METHOD');
+      const path = spec.path ?? await readPath(context);
+      const operationHeaders = normalizeRestHeaders(spec.headers);
+      operationHeaders['if-match'] = context.revision;
+      operationHeaders['idempotency-key'] = idempotencyKey;
+      const { body } = await request({ method, path, body: spec.body, requestHeaders: operationHeaders, signal: context.signal });
+      return body;
+    },
+    async verify(context) {
+      const result = await verifyFn(context);
+      if (typeof result !== 'boolean') throw new Error('PACT_REST_VERIFY_MUST_RETURN_BOOLEAN');
+      return result;
+    }
+  });
+}
