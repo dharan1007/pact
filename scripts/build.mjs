@@ -31,7 +31,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
