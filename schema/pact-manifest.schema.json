@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -25,14 +25,28 @@
     "http": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["connectorModule", "endpoint", "method", "requestEnvelope", "operations", "idempotencyHeader"],
+      "required": ["connectorModule", "endpoint", "method", "requestEnvelope", "operations", "idempotencyHeader", "idempotencyRequiredFor"],
       "properties": {
         "connectorModule": { "type": "string" },
         "endpoint": { "type": "string", "pattern": "^/" },
         "method": { "const": "POST" },
         "requestEnvelope": { "type": "object" },
         "operations": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
-        "idempotencyHeader": { "const": "Idempotency-Key" }
+        "idempotencyHeader": { "const": "Idempotency-Key" },
+        "idempotencyRequiredFor": { "type": "array", "uniqueItems": true, "items": { "enum": ["commit", "rollback"] }, "minItems": 2, "maxItems": 2 }
+      }
+    },
+    "adapterContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "schema", "requiredMethods", "planModel", "maxEffects", "maxInvariants"],
+      "properties": {
+        "module": { "const": "./adapter.bundle.js" },
+        "schema": { "const": "./schema/pact-adapter.schema.json" },
+        "requiredMethods": { "type": "array", "prefixItems": [{"const":"describe"},{"const":"plan"},{"const":"verify"}], "minItems": 3, "maxItems": 3 },
+        "planModel": { "const": "declarative-effects-and-invariants" },
+        "maxEffects": { "const": 256 },
+        "maxInvariants": { "const": 256 }
       }
     },
     "referenceRuntime": {

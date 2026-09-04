@@ -23,6 +23,17 @@ test('HTTP connector sends stable operation envelope and idempotency key', async
   assert.deepEqual(JSON.parse(calls[0].init.body), { operation: 'commit', payload: { txId: 'tx_1' } });
 });
 
+test('HTTP connector rejects consequential operations without a non-empty idempotency key before network I/O', async () => {
+  let calls = 0;
+  const connector = createPactHttpConnector({
+    baseUrl: 'https://pact.example',
+    fetchImpl: async () => { calls++; return { ok: true, status: 200, text: async () => '{}' }; }
+  });
+  await assert.rejects(() => connector.commit({ txId: 'tx_1' }), /PACT_HTTP_IDEMPOTENCY_KEY_REQUIRED/);
+  await assert.rejects(() => connector.rollback({ txId: 'tx_1' }, '   '), /PACT_HTTP_IDEMPOTENCY_KEY_REQUIRED/);
+  assert.equal(calls, 0);
+});
+
 test('HTTP connector rejects invalid operation names before network I/O', async () => {
   let calls = 0;
   const connector = createPactHttpConnector({ baseUrl: 'https://pact.example', fetchImpl: async () => { calls++; } });
@@ -36,7 +47,7 @@ test('HTTP connector surfaces structured HTTP failures', async () => {
     fetchImpl: async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: { code: 'STALE_PLAN' } }) })
   });
   await assert.rejects(async () => {
-    try { await connector.commit({ txId: 'tx_1' }); }
+    try { await connector.commit({ txId: 'tx_1' }, 'commit:tx_1'); }
     catch (error) { assert.equal(error.status, 409); throw error; }
   }, /STALE_PLAN/);
 });

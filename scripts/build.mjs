@@ -16,6 +16,7 @@ function moduleScope(source, names) {
 const source = async file => readFile(path.join(root, file), 'utf8');
 const bundles = {
   'engine.bundle.js': moduleScope(await source('src/engine.js'), ['createPactEngine']),
+  'adapter.bundle.js': moduleScope(await source('src/adapter.js'), ['definePactAdapter', 'validateAdapterPlan']),
   'persistence.bundle.js': moduleScope(await source('src/persistence.js'), ['LocalStorageSnapshotStore']),
   'webmcp.bundle.js': moduleScope(await source('src/webmcp.js'), ['createWebMcpRegistry']),
   'http.bundle.js': moduleScope(await source('src/http.js'), ['createPactHttpConnector']),
@@ -61,7 +62,9 @@ for (const route of routes) {
 }
 for (const file of ['vercel.json', 'README.md', 'LICENSE', 'pact-manifest.json']) await cp(path.join(root, file), path.join(dist, file));
 await mkdir(path.join(dist, 'schema'), { recursive: true });
-await cp(path.join(root, 'schema/pact-manifest.schema.json'), path.join(dist, 'schema/pact-manifest.schema.json'));
+for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json']) {
+  await cp(path.join(root, `schema/${file}`), path.join(dist, `schema/${file}`));
+}
 
 async function walk(dir, prefix='') {
   const out=[];
@@ -75,5 +78,5 @@ async function walk(dir, prefix='') {
 const files = await walk(dist);
 const hashes = {};
 for (const file of files) hashes[file] = createHash('sha256').update(await readFile(path.join(dist,file))).digest('hex');
-await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:5, files:hashes }, null, 2)+'\n');
+await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:6, files:hashes }, null, 2)+'\n');
 console.log(`Built ${files.length + 1} release files into dist/`);
