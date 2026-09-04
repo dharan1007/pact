@@ -27,10 +27,10 @@ test('workspace and demo use different runtime entrypoints', () => {
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships generic runtime, authority and durable store as importable ESM SDK modules with manifest discovery', () => {
+test('release ships generic runtime, authority, durable state and atomic store as importable ESM SDK modules with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'durable-state.js', 'http.js', 'webmcp.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   const manifest = JSON.parse(readFileSync(path.join(root, 'dist/pact-manifest.json'), 'utf8'));
@@ -41,6 +41,21 @@ test('release ships generic runtime, authority and durable store as importable E
   assert.equal(manifest.authority.storeModule, './sdk/redis-store.js');
   assert.equal(manifest.authority.atomicStoreRequired, true);
   assert.equal(manifest.authority.singleUseCommitCapability, true);
+});
+
+test('release exposes deterministic source provenance and includes it in integrity hashing', () => {
+  const run = spawnSync(process.execPath, ['scripts/build.mjs'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, PACT_SOURCE_COMMIT: '0123456789abcdef0123456789abcdef01234567' }
+  });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const provenance = JSON.parse(readFileSync(path.join(root, 'dist/release-provenance.json'), 'utf8'));
+  assert.equal(provenance.sourceCommit, '0123456789abcdef0123456789abcdef01234567');
+  assert.equal(provenance.sourceRepository, 'https://github.com/dharan1007/pact');
+  assert.equal(provenance.commitProvenance, 'declared-by-build-environment');
+  const release = JSON.parse(readFileSync(path.join(root, 'dist/release-manifest.json'), 'utf8'));
+  assert.match(release.files['release-provenance.json'], /^[a-f0-9]{64}$/);
 });
 
 test('identical source produces an identical release manifest', () => {
