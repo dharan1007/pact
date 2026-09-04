@@ -27,12 +27,13 @@ test('workspace and demo use different runtime entrypoints', () => {
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships generic runtime, authority and durable store as importable ESM SDK modules with manifest discovery', () => {
+test('release ships runtime, authority, real integrations and agent bridges with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'http.js', 'webmcp.js', 'agent-bridge.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
+  assert.equal(existsSync(path.join(root, 'dist/docs/agent-bridges.md')), true, 'missing agent bridge integration guide');
   const manifest = JSON.parse(readFileSync(path.join(root, 'dist/pact-manifest.json'), 'utf8'));
   assert.equal(manifest.runtime.module, './sdk/runtime.js');
   assert.equal(manifest.runtime.adapterDriven, true);
@@ -41,6 +42,14 @@ test('release ships generic runtime, authority and durable store as importable E
   assert.equal(manifest.authority.storeModule, './sdk/redis-store.js');
   assert.equal(manifest.authority.atomicStoreRequired, true);
   assert.equal(manifest.authority.singleUseCommitCapability, true);
+  assert.equal(manifest.integrations.externalRuntimeModule, './sdk/runtime.js');
+  assert.equal(manifest.integrations.restModule, './sdk/http.js');
+  assert.equal(manifest.integrations.remoteRevisionBinding, true);
+  assert.equal(manifest.integrations.lostResponseRecovery, true);
+  assert.equal(manifest.agentBridges.module, './sdk/agent-bridge.js');
+  assert.deepEqual(manifest.agentBridges.surfaces, ['http', 'webmcp', 'mcp']);
+  assert.equal(manifest.agentBridges.webmcpUntrustedContentDefault, true);
+  assert.equal(manifest.agentBridges.mcpProtocolRevision, '2026-07-28');
 });
 
 test('identical source produces an identical release manifest', () => {
