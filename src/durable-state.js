@@ -82,12 +82,12 @@ export function createPactDurableStateStore({ store, now = () => Date.now(), pre
 
       const nextStateDocument = clone(current.state);
       if (typeof mutate === 'function') {
-        const returned = await mutate(clone(nextStateDocument));
-        if (typeof returned !== 'undefined') {
-          if (!isPlainObject(returned)) fail('PACT_DURABLE_MUTATOR_MUST_RETURN_STATE');
-          Object.keys(nextStateDocument).forEach(keyName => delete nextStateDocument[keyName]);
-          Object.assign(nextStateDocument, clone(returned));
-        }
+        const draft = clone(nextStateDocument);
+        const returned = await mutate(draft);
+        const replacement = typeof returned === 'undefined' ? draft : returned;
+        if (!isPlainObject(replacement)) fail('PACT_DURABLE_MUTATOR_MUST_RETURN_STATE');
+        Object.keys(nextStateDocument).forEach(keyName => delete nextStateDocument[keyName]);
+        Object.assign(nextStateDocument, clone(replacement));
       }
       if (!isPlainObject(nextStateDocument.transaction)) fail('PACT_DURABLE_TRANSACTION_STATE_REQUIRED');
       nextStateDocument.transaction.state = nextState;
