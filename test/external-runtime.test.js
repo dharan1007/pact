@@ -97,3 +97,38 @@ test('external runtime can verify a lost-response commit without applying it twi
   assert.equal(receipt.recoveredFromUncertainCommit, true);
   assert.equal(calls, 1);
 });
+
+test('external runtime survives a process restart between approval and commit', async () => {
+  const { integration, applyCalls } = integrationHarness();
+  const first = runtimeModule.createPactExternalRuntime({ integration, verifyApproval });
+  first.startIntent({ type: 'transfer_owner', projectId: 'helios', newOwner: 'maya' });
+  await first.preview();
+  await first.approve({ approval: { proof: 'signed' } });
+  assert.equal(typeof first.exportSnapshot, 'function');
+  const snapshot = first.exportSnapshot();
+
+  const restarted = runtimeModule.createPactExternalRuntime({ integration, verifyApproval });
+  assert.equal(typeof restarted.restoreSnapshot, 'function');
+  await restarted.restoreSnapshot(snapshot);
+  assert.equal(restarted.inspect().transaction.state, 'APPROVED');
+  await restarted.commit({ idempotencyKey: 'commit:helios' });
+  const receipt = await restarted.verify();
+  assert.equal(receipt.verifiedRevision, 'r2');
+  assert.equal(applyCalls(), 1);
+});
+
+test('external runtime restoration rejects tampered plan and a different integration identity', async () => {
+  const { integration } = integrationHarness();
+  const first = runtimeModule.createPactExternalRuntime({ integration, verifyApproval });
+  first.startIntent({ type: 'transfer_owner', projectId: 'helios', newOwner: 'maya' });
+  await first.preview();
+  const snapshot = first.exportSnapshot();
+  snapshot.transaction.effects[0].after = 'attacker';
+  const restarted = runtimeModule.createPactExternalRuntime({ integration, verifyApproval });
+  await assert.rejects(() => restarted.restoreSnapshot(snapshot), /PACT_EXTERNAL_SNAPSHOT_PLAN_TAMPERED/);
+
+  const other = { ...integration, id: 'other.remote' };
+  const wrongRuntime = runtimeModule.createPactExternalRuntime({ integration: other, verifyApproval });
+  const clean = first.exportSnapshot();
+  await assert.rejects(() => wrongRuntime.restoreSnapshot(clean), /PACT_EXTERNAL_SNAPSHOT_INTEGRATION_MISMATCH/);
+});
