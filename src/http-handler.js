@@ -33,6 +33,44 @@ function bodyObject(req) {
   return req.body;
 }
 
+function requestHeader(req, name) {
+  const headers = req?.headers;
+  if (!headers || typeof headers !== 'object') return undefined;
+  const lower = name.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(headers, lower)) return headers[lower];
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).toLowerCase() === lower) return value;
+  }
+  return undefined;
+}
+
+function parseEnvelope(body) {
+  if (typeof body.operation === 'string') {
+    const payload = body.payload == null ? {} : body.payload;
+    if (typeof payload !== 'object' || Array.isArray(payload)) throw new Error('PACT_HTTP_INVALID_PAYLOAD');
+    return { action: body.operation, payload: { ...payload } };
+  }
+
+  if (typeof body.action === 'string') {
+    const { action, ...payload } = body;
+    return { action, payload };
+  }
+
+  throw new Error('PACT_HTTP_UNKNOWN_ACTION');
+}
+
+function bindIdempotency(req, action, payload) {
+  if (action !== 'commit') return payload;
+  const raw = requestHeader(req, 'idempotency-key');
+  if (raw == null || String(raw).trim() === '') return payload;
+  const headerKey = String(raw).trim();
+  if (headerKey.length > 256) throw new Error('PACT_HTTP_INVALID_IDEMPOTENCY_KEY');
+  if (payload.idempotencyKey != null && String(payload.idempotencyKey).trim() !== headerKey) {
+    throw new Error('PACT_HTTP_IDEMPOTENCY_CONFLICT');
+  }
+  return { ...payload, idempotencyKey: headerKey };
+}
+
 export function createPactHttpHandler({ service, releaseSha = '' } = {}) {
   if (!service || typeof service !== 'object') throw new Error('PACT_HTTP_SERVICE_REQUIRED');
 
@@ -47,16 +85,25 @@ export function createPactHttpHandler({ service, releaseSha = '' } = {}) {
       return writeJson(res, 405, { error: { code: 'PACT_HTTP_METHOD_NOT_ALLOWED' } });
     }
 
-    if (normalizeContentType(req?.headers?.['content-type']) !== 'application/json') {
+    if (normalizeContentType(requestHeader(req, 'content-type')) !== 'application/json') {
       return writeJson(res, 415, { error: { code: 'PACT_HTTP_JSON_REQUIRED' } });
     }
 
     const body = bodyObject(req);
     if (!body) return writeJson(res, 400, { error: { code: 'PACT_HTTP_INVALID_BODY' } });
 
-    const { action, ...payload } = body;
-    if (typeof action !== 'string' || !ACTIONS.has(action) || typeof service[action] !== 'function') {
-      return writeJson(res, 400, { error: { code: 'PACT_HTTP_UNKNOWN_ACTION' } });
+    let action;
+    let payload;
+    try {
+      ({ action, payload } = parseEnvelope(body));
+      if (!ACTIONS.has(action) || typeof service[action] !== 'function') throw new Error('PACT_HTTP_UNKNOWN_ACTION');
+      payload = bindIdempotency(req, action, payload);
+    } catch (error) {
+      const code = typeof error?.message === 'string' && /^PACT_HTTP_/.test(error.message)
+        ? error.message
+        : 'PACT_HTTP_INVALID_REQUEST';
+      const statusCode = code === 'PACT_HTTP_IDEMPOTENCY_CONFLICT' ? 409 : 400;
+      return writeJson(res, statusCode, { error: { code } });
     }
 
     try {
