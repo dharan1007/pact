@@ -7,47 +7,49 @@ function connector(log = []) {
   const consequential = op => async (payload, idempotencyKey, options) => { log.push({ op, payload, idempotencyKey, options }); return { ok: true, op, payload, idempotencyKey }; };
   return {
     inspect: normal('inspect'), preview: normal('preview'), approve: normal('approve'),
-    commit: consequential('commit'), verify: normal('verify'), receipt: normal('receipt'),
-    rollback: consequential('rollback'), cancel: normal('cancel')
+    commit: consequential('commit'), verify: normal('verify'), receipt: normal('receipt')
   };
 }
 
-test('shared catalog exposes real API-backed agent tools and preserves idempotency', async () => {
+test('shared catalog exposes exactly the canonical API-backed agent tools and preserves commit idempotency', async () => {
   const log = [];
   const catalog = createPactAgentToolCatalog({ connector: connector(log) });
   const tools = catalog.tools();
-  assert.equal(tools.length, 8);
+  assert.equal(tools.length, 6);
+  assert.deepEqual(tools.map(tool => tool.operation), ['inspect', 'preview', 'approve', 'commit', 'verify', 'receipt']);
+  assert.equal(tools.some(tool => /rollback|cancel/.test(tool.name)), false);
   assert.equal(tools.find(t => t.name === 'pact_commit_transaction').inputSchema.required.includes('idempotencyKey'), true);
   const result = await catalog.execute('pact_commit_transaction', { payload: { transactionId: 'tx_1' }, idempotencyKey: 'commit:tx_1' });
   assert.equal(result.idempotencyKey, 'commit:tx_1');
   assert.equal(log[0].op, 'commit');
 });
 
-test('consequential agent calls fail closed without idempotency keys', async () => {
+test('consequential agent commit fails closed without an idempotency key', async () => {
   const catalog = createPactAgentToolCatalog({ connector: connector() });
   await assert.rejects(() => catalog.execute('pact_commit_transaction', { payload: { transactionId: 'tx_1' } }), /PACT_AGENT_IDEMPOTENCY_KEY_REQUIRED/);
-  await assert.rejects(() => catalog.execute('pact_rollback_transaction', { payload: { transactionId: 'tx_1' }, idempotencyKey: '  ' }), /PACT_AGENT_IDEMPOTENCY_KEY_REQUIRED/);
 });
 
-test('WebMCP bridge registers current document modelContext tool shape and disposes by abort', async () => {
+test('WebMCP bridge uses the current single-input execute callback and registration AbortSignal', async () => {
   const registrations = [];
   const modelContext = { async registerTool(tool, options) { registrations.push({ tool, options }); } };
   const bridge = await registerPactWebMcpBridge({ connector: connector(), modelContext });
   assert.equal(bridge.supported, true);
-  assert.equal(registrations.length, 8);
-  assert.equal(registrations[0].tool.annotations.untrustedContentHint, false);
+  assert.equal(registrations.length, 6);
+  assert.equal(registrations[0].tool.annotations.untrustedContentHint, true);
   assert.equal(registrations[0].options.signal.aborted, false);
-  const output = await registrations.find(r => r.tool.name === 'pact_preview_transaction').tool.execute({ payload: { intent: { type: 'real' } } }, {});
+  const preview = registrations.find(r => r.tool.name === 'pact_preview_transaction').tool;
+  assert.equal(preview.execute.length, 1);
+  const output = await preview.execute({ payload: { intent: { type: 'real' } } });
   assert.equal(output.op, 'preview');
   bridge.dispose();
   assert.equal(registrations[0].options.signal.aborted, true);
 });
 
-test('MCP bridge registers the same tools and emits MCP content plus structuredContent', async () => {
+test('MCP bridge registers the same canonical tools and emits MCP content plus structuredContent', async () => {
   const registered = [];
   const server = { registerTool(name, config, handler) { registered.push({ name, config, handler }); return { name }; } };
   const bridge = registerPactMcpBridge({ connector: connector(), server, schemaFactory: jsonSchema => ({ jsonSchema }) });
-  assert.equal(bridge.names.length, 8);
+  assert.equal(bridge.names.length, 6);
   const commit = registered.find(r => r.name === 'pact_commit_transaction');
   assert.equal(commit.config.annotations.idempotentHint, true);
   const result = await commit.handler({ payload: { transactionId: 'tx_2' }, idempotencyKey: 'commit:tx_2' }, {});
@@ -55,7 +57,7 @@ test('MCP bridge registers the same tools and emits MCP content plus structuredC
   assert.equal(result.content[0].type, 'text');
 });
 
-test('agent bridge propagates cancellation to connector calls', async () => {
+test('agent catalog and MCP path propagate cancellation to connector calls', async () => {
   const controller = new AbortController();
   controller.abort(new Error('stop'));
   const catalog = createPactAgentToolCatalog({ connector: connector() });
