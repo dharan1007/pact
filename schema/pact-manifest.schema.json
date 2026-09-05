@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "integrations", "provenance", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "integrations", "agentBridges", "provenance", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -14,13 +14,16 @@
     "webmcp": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hostPreference", "transport", "toolsOnly", "requiresSecureContext", "annotations"],
+      "required": ["hostPreference", "transport", "toolsOnly", "requiresSecureContext", "annotations", "executeCallback", "registrationAbortSignal", "executionAbortSignal"],
       "properties": {
         "hostPreference": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "transport": { "const": "in-page" },
         "toolsOnly": { "type": "boolean" },
         "requiresSecureContext": { "type": "boolean" },
-        "annotations": { "type": "array", "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }], "minItems": 2, "maxItems": 2 }
+        "annotations": { "type": "array", "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }], "minItems": 2, "maxItems": 2 },
+        "executeCallback": { "const": "single-input" },
+        "registrationAbortSignal": { "const": true },
+        "executionAbortSignal": { "const": false }
       }
     },
     "http": {
@@ -33,12 +36,7 @@
         "endpoint": { "const": "/api/pact" },
         "method": { "const": "POST" },
         "requestEnvelope": { "type": "object" },
-        "operations": {
-          "type": "array",
-          "prefixItems": [{"const":"inspect"},{"const":"preview"},{"const":"approve"},{"const":"commit"},{"const":"verify"},{"const":"receipt"}],
-          "minItems": 6,
-          "maxItems": 6
-        },
+        "operations": { "type": "array", "prefixItems": [{"const":"inspect"},{"const":"preview"},{"const":"approve"},{"const":"commit"},{"const":"verify"},{"const":"receipt"}], "minItems": 6, "maxItems": 6 },
         "idempotencyHeader": { "const": "Idempotency-Key" },
         "idempotencyRequiredFor": { "type": "array", "prefixItems": [{ "const": "commit" }], "minItems": 1, "maxItems": 1 }
       }
@@ -115,6 +113,22 @@
         "idempotencyHeader": { "const": "Idempotency-Key" },
         "lostResponseRecovery": { "const": true },
         "credentialsBoundary": { "const": "server-side" }
+      }
+    },
+    "agentBridges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "surfaces", "canonicalOperations", "webmcpHost", "webmcpExecuteCallback", "webmcpRegistrationAbortSignal", "webmcpExecutionAbortSignal", "webmcpUntrustedContentDefault", "mcpTransportOwnedByHost"],
+      "properties": {
+        "module": { "const": "./sdk/agent-bridge.js" },
+        "surfaces": { "type": "array", "prefixItems": [{"const":"http"},{"const":"webmcp"},{"const":"mcp"}], "minItems": 3, "maxItems": 3 },
+        "canonicalOperations": { "type": "array", "prefixItems": [{"const":"inspect"},{"const":"preview"},{"const":"approve"},{"const":"commit"},{"const":"verify"},{"const":"receipt"}], "minItems": 6, "maxItems": 6 },
+        "webmcpHost": { "const": "document.modelContext" },
+        "webmcpExecuteCallback": { "const": "single-input" },
+        "webmcpRegistrationAbortSignal": { "const": true },
+        "webmcpExecutionAbortSignal": { "const": false },
+        "webmcpUntrustedContentDefault": { "const": true },
+        "mcpTransportOwnedByHost": { "const": true }
       }
     },
     "provenance": {
