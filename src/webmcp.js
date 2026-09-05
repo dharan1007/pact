@@ -20,10 +20,6 @@ function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
-function assertExecutionActive(signal) {
-  if (signal?.aborted) throw new Error('WEBMCP_EXECUTION_ABORTED', { cause: signal.reason });
-}
-
 export function toWebMcpResult(result) {
   return clone(result);
 }
@@ -43,8 +39,7 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
     return [...automated, ...expert];
   }
 
-  async function executeAutopilotFinish(signal) {
-    assertExecutionActive(signal);
+  async function executeAutopilotFinish() {
     const approved = engine.exportSnapshot();
     let committed;
     try {
@@ -56,7 +51,6 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
       throw error;
     }
 
-    assertExecutionActive(signal);
     try {
       const receipt = await engine.verify();
       const result = { state: 'VERIFIED', receipt };
@@ -68,9 +62,8 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
     }
   }
 
-  async function execute(name, signal) {
-    assertExecutionActive(signal);
-    if (name === 'pact_autopilot_finish') return executeAutopilotFinish(signal);
+  async function execute(name) {
+    if (name === 'pact_autopilot_finish') return executeAutopilotFinish();
     if (name === 'pact_autopilot_resume_verify') {
       const before = engine.exportSnapshot();
       try {
@@ -102,7 +95,6 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
       else if (name === 'pact_rollback_transaction') result = await engine.rollback();
       else if (name === 'pact_cancel_transaction') result = engine.cancel();
       else throw new Error('UNKNOWN_TOOL');
-      assertExecutionActive(signal);
       if (mutating) await onMutation({ name, result, snapshot: engine.exportSnapshot() });
       return result;
     } catch (error) {
@@ -130,7 +122,10 @@ export function createWebMcpRegistry({ engine, modelContext, onMutation = async 
             readOnlyHint: READ_ONLY.has(name),
             untrustedContentHint: false
           },
-          execute: async (_input, options = {}) => toWebMcpResult(await execute(name, options.signal))
+          // Current WebMCP ToolExecuteCallback receives the input object only.
+          // Registration lifetime is controlled by the AbortSignal supplied as
+          // the second registerTool() argument below.
+          execute: async _input => toWebMcpResult(await execute(name))
         }, { signal: controller.signal });
       }
       names = nextNames;
