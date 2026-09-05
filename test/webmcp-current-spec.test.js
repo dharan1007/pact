@@ -23,4 +23,13 @@ test('reference WebMCP registry uses single-input execute callbacks and registra
     assert.ok(options?.signal instanceof AbortSignal, `${tool.name} registration must carry AbortSignal`);
     assert.deepEqual(Object.keys(tool.annotations).sort(), ['readOnlyHint', 'untrustedContentHint']);
   }
+
+  // The current WebMCP callback contract passes only the input object. Extra
+  // arguments from an older host shape must be ignored instead of being treated
+  // as a per-execution AbortSignal.
+  const inspect = registrations.find(entry => entry.tool.name === 'pact_inspect').tool;
+  const obsoleteExecution = new AbortController();
+  obsoleteExecution.abort(new Error('obsolete-execute-options'));
+  const result = await inspect.execute({}, { signal: obsoleteExecution.signal });
+  assert.equal(result.transaction, null);
 });
