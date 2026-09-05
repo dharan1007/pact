@@ -5,6 +5,7 @@ import { createPactApiAuthorityService } from './api-authority.js';
 import { createPactHttpHandler } from './http-handler.js';
 import { createRedisAuthorityStore } from './redis-store.js';
 import { createHmacApprovalVerifier } from './server-approval.js';
+import { resolveReleaseSha } from './provenance.js';
 
 const fail = code => { throw new Error(code); };
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -95,8 +96,7 @@ export function createPactServerRuntimeFromEnv({ env = process.env, fetchImpl = 
   const redisUrl = nonEmpty(env?.UPSTASH_REDIS_REST_URL, 'PACT_RUNTIME_REDIS_URL_REQUIRED');
   const redisToken = nonEmpty(env?.UPSTASH_REDIS_REST_TOKEN, 'PACT_RUNTIME_REDIS_TOKEN_REQUIRED');
   const approvalSecret = nonEmpty(env?.PACT_APPROVAL_SECRET, 'PACT_RUNTIME_APPROVAL_SECRET_REQUIRED');
-  const releaseSha = nonEmpty(env?.PACT_SOURCE_COMMIT || env?.VERCEL_GIT_COMMIT_SHA || env?.GITHUB_SHA, 'PACT_RUNTIME_RELEASE_SHA_REQUIRED').toLowerCase();
-  if (!/^[a-f0-9]{40}$/.test(releaseSha)) fail('PACT_RUNTIME_INVALID_RELEASE_SHA');
+  const releaseSha = resolveReleaseSha(env, { required: true });
 
   const store = createRedisAuthorityStore({
     url: redisUrl,
