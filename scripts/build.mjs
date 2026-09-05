@@ -1,6 +1,7 @@
 import { cp, mkdir, rm, readFile, writeFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { describeReleaseProvenance } from '../src/provenance.js';
 
 const root = process.cwd();
 const dist = path.join(root, 'dist');
@@ -32,7 +33,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
@@ -78,13 +79,14 @@ for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json']) {
 await mkdir(path.join(dist, 'docs'), { recursive: true });
 await cp(path.join(root, 'docs/agent-bridges.md'), path.join(dist, 'docs/agent-bridges.md'));
 
-const sourceCommit = process.env.PACT_SOURCE_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || null;
+const provenance = describeReleaseProvenance(process.env);
 await writeFile(path.join(dist, 'release-provenance.json'), JSON.stringify({
   schema: 1,
-  sourceCommit,
+  sourceCommit: provenance.sourceCommit,
   sourceRepository: 'https://github.com/dharan1007/pact',
   buildContract: 'pact-release-v1',
-  commitProvenance: sourceCommit ? 'declared-by-build-environment' : 'unavailable'
+  commitProvenance: provenance.commitProvenance,
+  provenanceSources: provenance.sources
 }, null, 2) + '\n');
 
 async function walk(dir, prefix='') {

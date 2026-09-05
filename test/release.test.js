@@ -32,7 +32,7 @@ test('workspace uses the canonical HTTP playground while demo keeps the referenc
 test('release ships generic runtime, canonical API authority, durable state and atomic stores as importable ESM SDK modules with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   assert.equal(existsSync(path.join(root, 'api', 'pact.js')), true, 'missing Vercel /api/pact entrypoint');
@@ -56,19 +56,34 @@ test('Vercel release contract publishes dist while retaining the canonical api f
   assert.ok(Number.isInteger(config.functions['api/pact.js'].maxDuration), 'api/pact.js maxDuration must be explicit');
 });
 
-test('release exposes deterministic source provenance and includes it in integrity hashing', () => {
+test('release exposes validated source provenance and includes it in integrity hashing', () => {
+  const env = { ...process.env };
+  delete env.GITHUB_SHA;
+  delete env.VERCEL_GIT_COMMIT_SHA;
+  env.PACT_SOURCE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, PACT_SOURCE_COMMIT: '0123456789abcdef0123456789abcdef01234567' }
+    env
   });
   assert.equal(run.status, 0, run.stderr || run.stdout);
   const provenance = JSON.parse(readFileSync(path.join(root, 'dist/release-provenance.json'), 'utf8'));
   assert.equal(provenance.sourceCommit, '0123456789abcdef0123456789abcdef01234567');
   assert.equal(provenance.sourceRepository, 'https://github.com/dharan1007/pact');
-  assert.equal(provenance.commitProvenance, 'declared-by-build-environment');
+  assert.equal(provenance.commitProvenance, 'validated-consistent-build-environment');
+  assert.deepEqual(provenance.provenanceSources, ['PACT_SOURCE_COMMIT']);
   const release = JSON.parse(readFileSync(path.join(root, 'dist/release-manifest.json'), 'utf8'));
   assert.match(release.files['release-provenance.json'], /^[a-f0-9]{64}$/);
+});
+
+test('release build fails closed when declared provenance sources disagree', () => {
+  const env = { ...process.env };
+  delete env.GITHUB_SHA;
+  env.PACT_SOURCE_COMMIT = 'a'.repeat(40);
+  env.VERCEL_GIT_COMMIT_SHA = 'b'.repeat(40);
+  const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8', env });
+  assert.notEqual(run.status, 0);
+  assert.match(`${run.stderr}\n${run.stdout}`, /PACT_RUNTIME_RELEASE_SHA_CONFLICT/);
 });
 
 test('identical source produces an identical release manifest', () => {

@@ -103,4 +103,11 @@ test('server runtime from environment fails closed unless durable storage, appro
     PACT_APPROVAL_SECRET: 's'.repeat(32),
     PACT_SOURCE_COMMIT: 'not-a-sha'
   } }), /PACT_RUNTIME_INVALID_RELEASE_SHA/);
+  assert.throws(() => createPactServerRuntimeFromEnv({ env: {
+    UPSTASH_REDIS_REST_URL: 'https://redis.example',
+    UPSTASH_REDIS_REST_TOKEN: 'token',
+    PACT_APPROVAL_SECRET: 's'.repeat(32),
+    PACT_SOURCE_COMMIT: 'a'.repeat(40),
+    VERCEL_GIT_COMMIT_SHA: 'b'.repeat(40)
+  } }), /PACT_RUNTIME_RELEASE_SHA_CONFLICT/);
 });
