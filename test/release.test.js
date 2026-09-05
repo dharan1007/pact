@@ -29,10 +29,10 @@ test('workspace uses the canonical HTTP playground while demo keeps the referenc
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships generic runtime, canonical API authority, durable state and atomic stores as importable ESM SDK modules with manifest discovery', () => {
+test('release ships generic runtime, canonical API authority, durable state, real provider bridge and atomic stores as importable ESM SDK modules with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'rest-resource.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   assert.equal(existsSync(path.join(root, 'api', 'pact.js')), true, 'missing Vercel /api/pact entrypoint');
@@ -45,6 +45,12 @@ test('release ships generic runtime, canonical API authority, durable state and 
   assert.equal(manifest.authority.canonicalStoreModule, './sdk/canonical-store.js');
   assert.equal(manifest.authority.atomicStoreRequired, true);
   assert.equal(manifest.authority.singleUseCommitCapability, true);
+  assert.equal(manifest.integrations.restResourceModule, './sdk/rest-resource.js');
+  assert.equal(manifest.integrations.providerRevision, 'etag');
+  assert.equal(manifest.integrations.conditionalWriteHeader, 'If-Match');
+  assert.equal(manifest.integrations.idempotencyHeader, 'Idempotency-Key');
+  assert.equal(manifest.integrations.lostResponseRecovery, true);
+  assert.equal(manifest.integrations.credentialsBoundary, 'server-side');
 });
 
 test('Vercel release contract publishes dist while retaining the canonical api function', () => {
