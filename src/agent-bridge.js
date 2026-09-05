@@ -1,15 +1,13 @@
 const READ_ONLY = new Set(['pact_inspect','pact_get_transaction_receipt']);
-const CONSEQUENTIAL = new Set(['pact_commit_transaction','pact_rollback_transaction']);
+const CONSEQUENTIAL = new Set(['pact_commit_transaction']);
 
 const DEFINITIONS = [
   ['pact_inspect','Inspect PACT state','Read transaction and canonical state without mutation','inspect'],
   ['pact_preview_transaction','Preview transaction','Build the exact transaction plan against canonical state','preview'],
   ['pact_approve_transaction','Approve transaction','Submit application-verified human approval evidence for an exact preview','approve'],
   ['pact_commit_transaction','Commit transaction','Commit an approved transaction. Requires an idempotencyKey.','commit'],
-  ['pact_verify_transaction','Verify transaction','Verify postconditions and return the transaction receipt','verify'],
-  ['pact_get_transaction_receipt','Get transaction receipt','Read the verified receipt for a transaction','receipt'],
-  ['pact_rollback_transaction','Rollback transaction','Rollback a verified transaction. Requires an idempotencyKey.','rollback'],
-  ['pact_cancel_transaction','Cancel transaction','Cancel a transaction before commit','cancel']
+  ['pact_verify_transaction','Verify transaction','Verify postconditions against canonical state and persist the verified receipt','verify'],
+  ['pact_get_transaction_receipt','Get transaction receipt','Read the verified receipt for a transaction','receipt']
 ];
 
 function clone(value) { return value === undefined ? undefined : structuredClone(value); }
@@ -45,7 +43,7 @@ export function createPactAgentToolCatalog({ connector }) {
     inputSchema: schemaFor(name),
     annotations: {
       readOnlyHint: READ_ONLY.has(name),
-      destructiveHint: name === 'pact_rollback_transaction',
+      destructiveHint: name === 'pact_commit_transaction',
       idempotentHint: CONSEQUENTIAL.has(name),
       openWorldHint: true
     }
@@ -84,9 +82,15 @@ export async function registerPactWebMcpBridge({ connector, modelContext = globa
         inputSchema: tool.inputSchema,
         annotations: {
           readOnlyHint: tool.annotations.readOnlyHint,
-          untrustedContentHint: false
+          // Results can contain provider/API data, so the browser-agent surface
+          // treats them as untrusted unless an application wraps the bridge with
+          // stronger domain-specific guarantees.
+          untrustedContentHint: true
         },
-        execute: async (input, ctx = {}) => catalog.execute(tool.name, input, { signal: ctx.signal })
+        // Current WebMCP ToolExecuteCallback accepts only the input object.
+        // Registration lifetime is controlled separately by the AbortSignal in
+        // ModelContextRegisterToolOptions below.
+        execute: async input => catalog.execute(tool.name, input)
       }, { signal: controller.signal });
       names.push(tool.name);
     }

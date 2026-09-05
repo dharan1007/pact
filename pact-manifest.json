@@ -9,7 +9,10 @@
     "transport": "in-page",
     "toolsOnly": true,
     "requiresSecureContext": true,
-    "annotations": ["readOnlyHint", "untrustedContentHint"]
+    "annotations": ["readOnlyHint", "untrustedContentHint"],
+    "executeCallback": "single-input",
+    "registrationAbortSignal": true,
+    "executionAbortSignal": false
   },
   "http": {
     "connectorModule": "./http.bundle.js",
@@ -31,10 +34,12 @@
   },
   "runtime": {
     "module": "./sdk/runtime.js",
+    "serverModule": "./sdk/server-runtime.js",
     "adapterDriven": true,
     "approvalVerifierRequired": true,
     "stateModel": "optimistic-versioned",
-    "receiptBindsApprovalClaims": true
+    "receiptBindsApprovalClaims": true,
+    "customCanonicalBridge": true
   },
   "authority": {
     "module": "./sdk/authority.js",
@@ -58,6 +63,27 @@
     "concurrency": "single-winner-optimistic-transition",
     "canonicalReplaySnapshots": true
   },
+  "integrations": {
+    "restResourceModule": "./sdk/rest-resource.js",
+    "canonicalBridgeFactory": "createPactRestResourceBridge",
+    "adapterFactory": "createPactJsonResourceAdapter",
+    "providerRevision": "etag",
+    "conditionalWriteHeader": "If-Match",
+    "idempotencyHeader": "Idempotency-Key",
+    "lostResponseRecovery": true,
+    "credentialsBoundary": "server-side"
+  },
+  "agentBridges": {
+    "module": "./sdk/agent-bridge.js",
+    "surfaces": ["http", "webmcp", "mcp"],
+    "canonicalOperations": ["inspect", "preview", "approve", "commit", "verify", "receipt"],
+    "webmcpHost": "document.modelContext",
+    "webmcpExecuteCallback": "single-input",
+    "webmcpRegistrationAbortSignal": true,
+    "webmcpExecutionAbortSignal": false,
+    "webmcpUntrustedContentDefault": true,
+    "mcpTransportOwnedByHost": true
+  },
   "provenance": {
     "endpoint": "/release-provenance.json",
     "integrityManifest": "/release-manifest.json",
@@ -66,21 +92,23 @@
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
-    "warning": "The reference engine remains for the guided Helios scenario. New integrations should use ./sdk/runtime.js or ./sdk/api-authority.js with a validated adapter, an application-controlled authenticated approval verifier, and durable atomic storage."
+    "warning": "The reference engine remains for the guided Helios scenario. Real integrations should use ./sdk/api-authority.js through ./sdk/server-runtime.js with a validated adapter and canonical bridge such as ./sdk/rest-resource.js, an application-controlled authenticated approval verifier, and durable atomic storage."
   },
   "security": {
     "humanApproval": "application-supplied verifier must authenticate approval and return humanPrincipal plus agentSession claims",
     "referenceApprovalVerifier": "HMAC-SHA256 verifier binds transaction, plan, base version, adapter, principal/session claims, nonce and short expiry",
     "planBinding": "sha256",
-    "stateBinding": "canonical version",
+    "stateBinding": "canonical version plus provider ETag when using the REST resource bridge",
     "authority": "opaque short-lived single-use capability bound to transaction, plan, base version and verified identity claims",
-    "verification": "postconditions plus invariants plus adapter verification",
+    "providerCredentials": "server-side only; never expose provider secrets to browser WebMCP tools",
+    "verification": "postconditions plus invariants plus adapter verification against canonical provider state",
     "receipt": "hash binds adapter, plan, versions, effects, invariants and approval claims"
   },
   "documentation": {
     "developers": "/developers/",
     "security": "/security/",
     "protocol": "/how-it-works/",
-    "playground": "/workspace/"
+    "playground": "/workspace/",
+    "realRestProvider": "/docs/rest-provider.md"
   }
 }
