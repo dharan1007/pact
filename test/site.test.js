@@ -53,6 +53,20 @@ test('developers page shows the exact HTTP connector API and current WebMCP anno
   assert.match(html, /untrustedContentHint/);
 });
 
+test('WebMCP developer guidance uses registration AbortSignal and a single-input execute callback', async () => {
+  const html = await readFile('pages/developers.html','utf8');
+  assert.match(html, /execute: async input/);
+  assert.match(html, /registerTool/);
+  assert.match(html, /registration/);
+  assert.match(html, /AbortSignal/);
+  assert.doesNotMatch(html, /execute callback AbortSignal/i);
+  assert.doesNotMatch(html, /execute: async \([^)]*,\s*\{\s*signal/);
+  const readme = await readFile('README.md','utf8');
+  assert.match(readme, /single input object/i);
+  assert.match(readme, /registration.*AbortSignal/i);
+  assert.doesNotMatch(readme, /execution callback AbortSignal/i);
+});
+
 test('developers page documents canonical commit idempotency and durable authority without advertising unsupported rollback', async () => {
   const html = await readFile('pages/developers.html','utf8');
   assert.match(html, /idempotency key/i);
