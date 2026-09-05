@@ -21,6 +21,8 @@ function normalizeContentType(value) {
 
 function protocolStatus(code) {
   if (code === 'PACT_API_TRANSACTION_NOT_FOUND') return 404;
+  if (code === 'PACT_REST_COMMIT_UNCERTAIN') return 503;
+  if (code === 'PACT_REST_PROVIDER_READ_FAILED' || code.startsWith('PACT_REST_PROVIDER_HTTP_') || code === 'PACT_REST_PROVIDER_POSTCONDITION_FAILED' || code === 'PACT_REST_INVALID_PROVIDER_RESPONSE' || code === 'PACT_REST_ETAG_REQUIRED' || code === 'PACT_REST_ETAG_REUSED_FOR_DIFFERENT_STATE') return 502;
   if (code.includes('STALE_') || code.includes('CONFLICT') || code.includes('ALREADY_CONSUMED') || code.includes('CONTENTION')) return 409;
   if (code.includes('EXPIRED')) return 410;
   if (code.includes('NOT_APPROVED') || code.includes('NOT_PREVIEWED') || code.includes('NOT_COMMITTED') || code.includes('RECEIPT_NOT_AVAILABLE')) return 409;
@@ -111,7 +113,7 @@ export function createPactHttpHandler({ service, releaseSha = '' } = {}) {
       return writeJson(res, 200, result);
     } catch (error) {
       const code = typeof error?.message === 'string' ? error.message : '';
-      if (/^PACT_(?:API|AUTHORITY|DURABLE)_/.test(code)) {
+      if (/^PACT_(?:API|AUTHORITY|DURABLE|REST)_/.test(code)) {
         return writeJson(res, protocolStatus(code), { error: { code } });
       }
       return writeJson(res, 500, { error: { code: 'PACT_HTTP_INTERNAL_ERROR' } });
