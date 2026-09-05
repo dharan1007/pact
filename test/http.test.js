@@ -23,14 +23,20 @@ test('HTTP connector sends stable operation envelope and idempotency key', async
   assert.deepEqual(JSON.parse(calls[0].init.body), { operation: 'commit', payload: { txId: 'tx_1' } });
 });
 
-test('HTTP connector rejects consequential operations without a non-empty idempotency key before network I/O', async () => {
+test('HTTP connector exposes exactly the canonical server operation surface', () => {
+  const connector = createPactHttpConnector({ baseUrl: 'https://pact.example', fetchImpl: async () => {} });
+  for (const operation of ['inspect', 'preview', 'approve', 'commit', 'verify', 'receipt']) assert.equal(typeof connector[operation], 'function');
+  assert.equal(connector.rollback, undefined);
+  assert.equal(connector.cancel, undefined);
+});
+
+test('HTTP connector rejects consequential commit without a non-empty idempotency key before network I/O', async () => {
   let calls = 0;
   const connector = createPactHttpConnector({
     baseUrl: 'https://pact.example',
     fetchImpl: async () => { calls++; return { ok: true, status: 200, text: async () => '{}' }; }
   });
   await assert.rejects(() => connector.commit({ txId: 'tx_1' }), /PACT_HTTP_IDEMPOTENCY_KEY_REQUIRED/);
-  await assert.rejects(() => connector.rollback({ txId: 'tx_1' }, '   '), /PACT_HTTP_IDEMPOTENCY_KEY_REQUIRED/);
   assert.equal(calls, 0);
 });
 

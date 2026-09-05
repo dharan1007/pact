@@ -1,4 +1,5 @@
-const CONSEQUENTIAL_OPERATIONS = new Set(['commit', 'rollback']);
+const CONSEQUENTIAL_OPERATIONS = new Set(['commit']);
+const CANONICAL_OPERATIONS = new Set(['inspect', 'preview', 'approve', 'commit', 'verify', 'receipt']);
 
 function assertBaseUrl(value) {
   const url = new URL(value);
@@ -38,6 +39,7 @@ export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch,
 
   async function request(operation, payload = {}, options = {}) {
     if (!/^[a-z][a-z0-9_]*$/.test(operation)) throw new Error('PACT_HTTP_INVALID_OPERATION');
+    if (!CANONICAL_OPERATIONS.has(operation)) throw new Error('PACT_HTTP_UNSUPPORTED_OPERATION');
     const idempotencyKey = normalizeIdempotencyKey(operation, options.idempotencyKey);
     const callerSignal = assertAbortSignal(options.signal);
     const controller = new AbortController();
@@ -100,8 +102,6 @@ export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch,
     approve: (payload, options) => request('approve', payload, options),
     commit: (payload, idempotencyKey, options = {}) => request('commit', payload, { ...options, idempotencyKey }),
     verify: (payload, options) => request('verify', payload, options),
-    receipt: (payload, options) => request('receipt', payload, options),
-    rollback: (payload, idempotencyKey, options = {}) => request('rollback', payload, { ...options, idempotencyKey }),
-    cancel: (payload, options) => request('cancel', payload, options)
+    receipt: (payload, options) => request('receipt', payload, options)
   };
 }

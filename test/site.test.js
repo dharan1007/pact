@@ -5,18 +5,20 @@ import { readFile } from 'node:fs/promises';
 const pages = [
   ['index.html','WHY PACT EXISTS'],
   ['pages/demo.html','One approval. Everything else automated.'],
-  ['pages/workspace.html','Transaction workspace'],
+  ['pages/workspace.html','Generic adapter transaction playground'],
   ['pages/how-it-works.html','How PACT works'],
   ['pages/security.html','Trust without blind access'],
   ['pages/developers.html','Use PACT as a runtime, not a demo.']
 ];
-const nav = ['Overview','Live Demo','Workspace','How It Works','Security','Developers'];
+const nav = ['Overview','Live Demo','How It Works','Security','Developers'];
 
 test('all product routes exist and explain their purpose', async () => {
   for (const [file, marker] of pages) {
     const html = await readFile(file,'utf8');
     assert.match(html, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
     for (const item of nav) assert.match(html, new RegExp(item));
+    assert.match(html, /href="\/workspace\/"/);
+    assert.match(html, /(?:Workspace|API Playground)/);
   }
 });
 
@@ -66,13 +68,18 @@ test('guided demo explicitly supports durable committed-state recovery', async (
   assert.match(js, /resumeApproved\(\)/);
 });
 
-test('workspace explains committed recovery instead of stranding the user', async () => {
+test('canonical API playground can recover a durable transaction by id after reload', async () => {
   const html = await readFile('pages/workspace.html','utf8');
   assert.match(html, /recovery/i);
   assert.match(html, /verification/i);
-  const js = await readFile('src/main.js','utf8');
-  assert.match(js, /recovery-status/);
+  assert.match(html, /id="recovery-tx-id"/);
+  assert.match(html, /id="recover"/);
+  const js = await readFile('src/playground.js','utf8');
+  assert.match(js, /async function recover\(\)/);
+  assert.match(js, /connector\.inspect\(payload\)/);
+  assert.match(js, /state\.transaction = result\.transaction/);
   assert.match(js, /COMMITTED/);
+  assert.match(js, /VERIFIED/);
 });
 
 test('browser boot fails closed on corrupt persistence instead of deleting evidence', async () => {

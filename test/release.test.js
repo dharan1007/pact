@@ -19,28 +19,41 @@ test('production build emits every product route and every referenced local asse
   }
 });
 
-test('workspace and demo use different runtime entrypoints', () => {
+test('workspace uses the canonical HTTP playground while demo keeps the reference orchestrator', () => {
   const workspace = readFileSync(path.join(root,'dist/workspace/index.html'),'utf8');
   const demo = readFileSync(path.join(root,'dist/demo/index.html'),'utf8');
-  assert.match(workspace,/workspace\.bundle\.js/);
+  assert.match(workspace,/playground\.bundle\.js/);
+  assert.match(workspace,/http\.bundle\.js/);
+  assert.doesNotMatch(workspace,/workspace\.bundle\.js/);
   assert.match(demo,/demo\.bundle\.js/);
   assert.match(demo,/orchestrator\.bundle\.js/);
 });
 
-test('release ships generic runtime, authority, durable state and atomic store as importable ESM SDK modules with manifest discovery', () => {
+test('release ships generic runtime, canonical API authority, durable state and atomic stores as importable ESM SDK modules with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'redis-store.js', 'durable-state.js', 'http.js', 'webmcp.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'webmcp.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
+  assert.equal(existsSync(path.join(root, 'api', 'pact.js')), true, 'missing Vercel /api/pact entrypoint');
   const manifest = JSON.parse(readFileSync(path.join(root, 'dist/pact-manifest.json'), 'utf8'));
   assert.equal(manifest.runtime.module, './sdk/runtime.js');
   assert.equal(manifest.runtime.adapterDriven, true);
   assert.equal(manifest.runtime.approvalVerifierRequired, true);
   assert.equal(manifest.authority.module, './sdk/authority.js');
   assert.equal(manifest.authority.storeModule, './sdk/redis-store.js');
+  assert.equal(manifest.authority.canonicalStoreModule, './sdk/canonical-store.js');
   assert.equal(manifest.authority.atomicStoreRequired, true);
   assert.equal(manifest.authority.singleUseCommitCapability, true);
+});
+
+test('Vercel release contract publishes dist while retaining the canonical api function', () => {
+  const config = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'utf8'));
+  assert.equal(config.$schema, 'https://openapi.vercel.sh/vercel.json');
+  assert.equal(config.outputDirectory, 'dist');
+  assert.equal(config.buildCommand, 'npm run build');
+  assert.ok(config.functions && config.functions['api/pact.js'], 'api/pact.js must be declared as a Vercel Function');
+  assert.ok(Number.isInteger(config.functions['api/pact.js'].maxDuration), 'api/pact.js maxDuration must be explicit');
 });
 
 test('release exposes deterministic source provenance and includes it in integrity hashing', () => {
