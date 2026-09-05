@@ -4,8 +4,8 @@ PACT is an experimental trust and transaction layer for consequential agent acti
 
 ## What is real in this repository
 
-- `src/webmcp.js` — imperative WebMCP bridge targeting `document.modelContext`, with state-dependent tools, current security annotations, abort-driven cleanup and structured JavaScript results.
-- `src/agent-bridge.js` — shared agent-tool catalog for HTTP, WebMCP and MCP surfaces.
+- `src/webmcp.js` — imperative WebMCP bridge targeting `document.modelContext`, with state-dependent tools, current security annotations, registration-lifetime cleanup and structured JavaScript results.
+- `src/agent-bridge.js` — shared canonical agent-tool catalog for HTTP, WebMCP and MCP surfaces.
 - `src/http.js` — reusable HTTPS connector for the canonical PACT `/api/pact` authority endpoint. Commit fails closed without an idempotency key; caller cancellation and connector deadlines are distinct errors.
 - `src/adapter.js` — executable adapter contract and defensive declarative-plan validator.
 - `src/api-authority.js` — canonical durable server authority implementing `preview`, authenticated `approve`, one-shot `commit`, `verify`, `receipt`, and `inspect`.
@@ -18,7 +18,7 @@ PACT is an experimental trust and transaction layer for consequential agent acti
 - `src/server-runtime.js` — production composition layer. It supports the built-in generic canonical document and an official `rest-json` mode for real JSON REST resources.
 - `api/pact.js` — Vercel Function entrypoint. It fails closed when durable storage, approval secret or exact release provenance are unavailable.
 - `src/playground.js` + `/workspace/` — canonical HTTP playground showing request, plan, approval, commit, verification, receipt, errors and durable recovery by transaction ID.
-- `pact-manifest.json` + `schema/pact-manifest.schema.json` — machine-readable product contract and schema, now checked against each other by CI.
+- `pact-manifest.json` + `schema/pact-manifest.schema.json` — machine-readable product, WebMCP and agent-bridge contract checked against its schema by CI.
 - `src/provenance.js` + `scripts/build.mjs` — deterministic release provenance and integrity hashing.
 
 PACT therefore contains a real server-side transaction plane rather than only a browser simulation. The default `generic` runtime remains useful for the playground and integration testing. For real systems, use a domain adapter and canonical bridge; the shipped `rest-json` mode is the first production-oriented bridge for JSON REST resources.
@@ -81,14 +81,31 @@ See `docs/rest-provider.md` for the integration contract.
 - `/sdk/canonical-store.js` — internal canonical state repository
 - `/sdk/authority.js` — one-shot authority primitive
 - `/sdk/redis-store.js` — Redis-compatible atomic store
-- `/sdk/agent-bridge.js` — HTTP/WebMCP/MCP shared tool bridge
+- `/sdk/agent-bridge.js` — canonical HTTP/WebMCP/MCP shared tool bridge
 - `/sdk/provenance.js` — release provenance resolver
 - `/docs/rest-provider.md` — real provider integration guide
 - `/release-provenance.json` — generated source provenance for the built artifact
 
+## Canonical agent surfaces
+
+`src/agent-bridge.js` exposes the same six canonical operations through HTTP-backed WebMCP and MCP integrations:
+
+```text
+inspect
+preview
+approve
+commit
+verify
+receipt
+```
+
+The agent bridge intentionally does not invent `rollback` or `cancel` operations that the canonical server does not implement. `commit` is the only consequential operation in this surface and requires an idempotency key. WebMCP provider/API output is marked untrusted by default. MCP transport/framing remains owned by the MCP host/SDK rather than reimplemented by PACT.
+
 ## WebMCP compatibility
 
-PACT targets the experimental imperative WebMCP API at `document.modelContext.registerTool()`. Tool definitions use explicit names, titles, descriptions, closed JSON input schemas and the annotation fields `readOnlyHint` and `untrustedContentHint`. PACT observes the execution callback `AbortSignal` and owns registration cleanup through an `AbortController`.
+PACT targets the experimental imperative WebMCP API at `document.modelContext.registerTool()`. Tool definitions use explicit names, titles, descriptions, closed JSON input schemas and the annotation fields `readOnlyHint` and `untrustedContentHint`.
+
+The current `ToolExecuteCallback` receives a **single input object**. Registration lifetime is controlled by the `AbortSignal` in `ModelContextRegisterToolOptions`; aborting that registration signal unregisters the tool. The current draft does not define a second per-execution abort-signal argument. HTTP and MCP surfaces retain their own cancellation mechanisms.
 
 PACT does not emit a `consequentialHint` field. Consequential-action protection is enforced by PACT's transaction and authority layer rather than represented as a WebMCP guarantee. Imperative callbacks return normal JavaScript values for the user agent to serialize.
 
@@ -199,8 +216,9 @@ The verification suite covers, among other cases:
 - receipt and audit integrity
 - HTTP method/media-type/error/header behavior
 - HTTPS-only connector/provider behavior
-- cancellation vs timeout distinction
-- current imperative WebMCP registration and cancellation contract
+- HTTP/MCP cancellation vs timeout distinction
+- current imperative WebMCP registration and single-input execution contract
+- canonical HTTP/WebMCP/MCP operation-surface parity
 - generic playground durable recovery by transaction ID
 - manifest/schema self-consistency
 - deterministic provenance hashing and provenance-conflict rejection
