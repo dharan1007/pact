@@ -47,6 +47,15 @@ test('release ships generic runtime, canonical API authority, durable state and 
   assert.equal(manifest.authority.singleUseCommitCapability, true);
 });
 
+test('Vercel release contract publishes dist while retaining the canonical api function', () => {
+  const config = JSON.parse(readFileSync(path.join(root, 'vercel.json'), 'utf8'));
+  assert.equal(config.$schema, 'https://openapi.vercel.sh/vercel.json');
+  assert.equal(config.outputDirectory, 'dist');
+  assert.equal(config.buildCommand, 'npm run build');
+  assert.ok(config.functions && config.functions['api/pact.js'], 'api/pact.js must be declared as a Vercel Function');
+  assert.ok(Number.isInteger(config.functions['api/pact.js'].maxDuration), 'api/pact.js maxDuration must be explicit');
+});
+
 test('release exposes deterministic source provenance and includes it in integrity hashing', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], {
     cwd: root,
