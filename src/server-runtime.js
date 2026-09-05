@@ -49,7 +49,31 @@ function createGenericAdapter() {
   });
 }
 
-export function createPactServerRuntime({ store, approvalSecret, releaseSha, now = () => Date.now() } = {}) {
+function validateAdapter(adapter) {
+  if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) fail('PACT_RUNTIME_ADAPTER_REQUIRED');
+  nonEmpty(adapter.id, 'PACT_RUNTIME_ADAPTER_ID_REQUIRED');
+  nonEmpty(adapter.version, 'PACT_RUNTIME_ADAPTER_VERSION_REQUIRED');
+  for (const method of ['plan', 'verify']) {
+    if (typeof adapter[method] !== 'function') fail(`PACT_RUNTIME_ADAPTER_METHOD_REQUIRED:${method}`);
+  }
+  return adapter;
+}
+
+function validateCanonicalBridge(canonical) {
+  if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) fail('PACT_RUNTIME_CANONICAL_BRIDGE_REQUIRED');
+  if (typeof canonical.read !== 'function') fail('PACT_RUNTIME_CANONICAL_READ_REQUIRED');
+  if (typeof canonical.commit !== 'function') fail('PACT_RUNTIME_CANONICAL_COMMIT_REQUIRED');
+  return canonical;
+}
+
+export function createPactServerRuntime({
+  store,
+  approvalSecret,
+  releaseSha,
+  now = () => Date.now(),
+  adapter: suppliedAdapter,
+  canonical: suppliedCanonical
+} = {}) {
   if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
     fail('PACT_RUNTIME_ATOMIC_STORE_REQUIRED');
   }
@@ -57,16 +81,20 @@ export function createPactServerRuntime({ store, approvalSecret, releaseSha, now
   releaseSha = nonEmpty(releaseSha, 'PACT_RUNTIME_RELEASE_SHA_REQUIRED').toLowerCase();
   if (!/^[a-f0-9]{40}$/.test(releaseSha)) fail('PACT_RUNTIME_INVALID_RELEASE_SHA');
   if (typeof now !== 'function') fail('PACT_RUNTIME_CLOCK_REQUIRED');
+  if ((suppliedAdapter == null) !== (suppliedCanonical == null)) fail('PACT_RUNTIME_PROVIDER_PAIR_REQUIRED');
 
-  const adapter = createGenericAdapter();
-  const canonical = createCanonicalStateRepository({
-    store,
-    key: 'pact:canonical:pact.generic@1.0.0',
-    initialState: {
-      version: 0,
-      document: { kind: 'pact-generic-v1', value: null }
-    }
-  });
+  const adapter = suppliedAdapter == null ? createGenericAdapter() : validateAdapter(suppliedAdapter);
+  const canonical = suppliedCanonical == null
+    ? createCanonicalStateRepository({
+        store,
+        key: 'pact:canonical:pact.generic@1.0.0',
+        initialState: {
+          version: 0,
+          document: { kind: 'pact-generic-v1', value: null }
+        }
+      })
+    : validateCanonicalBridge(suppliedCanonical);
+
   const verifyApproval = createHmacApprovalVerifier({ secret: approvalSecret, now });
   const service = createPactApiAuthorityService({
     store,
