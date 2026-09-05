@@ -9,7 +9,10 @@
     "transport": "in-page",
     "toolsOnly": true,
     "requiresSecureContext": true,
-    "annotations": ["readOnlyHint", "untrustedContentHint"]
+    "annotations": ["readOnlyHint", "untrustedContentHint"],
+    "executeCallback": "single-input",
+    "registrationAbortSignal": true,
+    "executionAbortSignal": false
   },
   "http": {
     "connectorModule": "./http.bundle.js",
@@ -69,6 +72,17 @@
     "idempotencyHeader": "Idempotency-Key",
     "lostResponseRecovery": true,
     "credentialsBoundary": "server-side"
+  },
+  "agentBridges": {
+    "module": "./sdk/agent-bridge.js",
+    "surfaces": ["http", "webmcp", "mcp"],
+    "canonicalOperations": ["inspect", "preview", "approve", "commit", "verify", "receipt"],
+    "webmcpHost": "document.modelContext",
+    "webmcpExecuteCallback": "single-input",
+    "webmcpRegistrationAbortSignal": true,
+    "webmcpExecutionAbortSignal": false,
+    "webmcpUntrustedContentDefault": true,
+    "mcpTransportOwnedByHost": true
   },
   "provenance": {
     "endpoint": "/release-provenance.json",
