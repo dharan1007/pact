@@ -6,6 +6,7 @@ import { createPactHttpHandler } from './http-handler.js';
 import { createRedisAuthorityStore } from './redis-store.js';
 import { createHmacApprovalVerifier } from './server-approval.js';
 import { resolveReleaseSha } from './provenance.js';
+import { createPactRestResourceBridge, createPactJsonResourceAdapter } from './rest-resource.js';
 
 const fail = code => { throw new Error(code); };
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -13,6 +14,10 @@ const isPlainObject = value => Boolean(value) && typeof value === 'object' && !A
 function nonEmpty(value, code) {
   if (typeof value !== 'string' || value.trim() === '') fail(code);
   return value.trim();
+}
+
+function optionalString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 function same(a, b) {
@@ -132,5 +137,39 @@ export function createPactServerRuntimeFromEnv({ env = process.env, fetchImpl = 
     fetchImpl,
     prefix: 'pact:v1:'
   });
-  return createPactServerRuntime({ store, approvalSecret, releaseSha, now });
+
+  const mode = optionalString(env?.PACT_RUNTIME_MODE) || 'generic';
+  if (mode === 'generic') {
+    return createPactServerRuntime({ store, approvalSecret, releaseSha, now });
+  }
+  if (mode !== 'rest-json') fail('PACT_RUNTIME_MODE_UNSUPPORTED');
+
+  const baseUrl = nonEmpty(env?.PACT_REST_BASE_URL, 'PACT_RUNTIME_REST_BASE_URL_REQUIRED');
+  const resourcePath = nonEmpty(env?.PACT_REST_RESOURCE_PATH, 'PACT_RUNTIME_REST_RESOURCE_PATH_REQUIRED');
+  const resourceKey = nonEmpty(env?.PACT_REST_RESOURCE_KEY, 'PACT_RUNTIME_REST_RESOURCE_KEY_REQUIRED');
+  const adapterId = nonEmpty(env?.PACT_REST_ADAPTER_ID, 'PACT_RUNTIME_REST_ADAPTER_ID_REQUIRED');
+  const adapterVersion = optionalString(env?.PACT_REST_ADAPTER_VERSION) || '1.0.0';
+  const bearerToken = optionalString(env?.PACT_REST_BEARER_TOKEN);
+  const method = optionalString(env?.PACT_REST_METHOD) || 'PUT';
+
+  const headers = bearerToken ? { authorization: `Bearer ${bearerToken}` } : {};
+  const canonical = createPactRestResourceBridge({
+    store,
+    key: resourceKey,
+    baseUrl,
+    resourcePath,
+    fetchImpl,
+    headers,
+    method
+  });
+  const adapter = createPactJsonResourceAdapter({ id: adapterId, version: adapterVersion });
+
+  return createPactServerRuntime({
+    store,
+    approvalSecret,
+    releaseSha,
+    now,
+    adapter,
+    canonical
+  });
 }
