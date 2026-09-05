@@ -156,6 +156,28 @@ test('server runtime rejects malformed generic intents before creating a transac
   }), /PACT_GENERIC_VALUE_REQUIRED/);
 });
 
+test('official server runtime can select a fail-closed real REST JSON provider mode from server-only environment', () => {
+  const env = {
+    UPSTASH_REDIS_REST_URL: 'https://redis.example',
+    UPSTASH_REDIS_REST_TOKEN: 'redis-token',
+    PACT_APPROVAL_SECRET: 's'.repeat(32),
+    PACT_SOURCE_COMMIT: 'd'.repeat(40),
+    PACT_RUNTIME_MODE: 'rest-json',
+    PACT_REST_BASE_URL: 'https://provider.example',
+    PACT_REST_RESOURCE_PATH: '/v1/accounts/42',
+    PACT_REST_RESOURCE_KEY: 'provider:account-42',
+    PACT_REST_ADAPTER_ID: 'provider.account',
+    PACT_REST_BEARER_TOKEN: 'provider-secret'
+  };
+  const runtime = createPactServerRuntimeFromEnv({ env, fetchImpl: async () => { throw new Error('not called during composition'); } });
+  assert.equal(runtime.adapter.id, 'provider.account');
+  assert.equal(runtime.canonical.url, 'https://provider.example/v1/accounts/42');
+  assert.equal(runtime.releaseSha, 'd'.repeat(40));
+
+  assert.throws(() => createPactServerRuntimeFromEnv({ env: { ...env, PACT_RUNTIME_MODE: 'unknown-mode' } }), /PACT_RUNTIME_MODE_UNSUPPORTED/);
+  assert.throws(() => createPactServerRuntimeFromEnv({ env: { ...env, PACT_REST_BASE_URL: '' } }), /PACT_RUNTIME_REST_BASE_URL_REQUIRED/);
+});
+
 test('server runtime from environment fails closed unless durable storage, approval secret, and exact release SHA exist', () => {
   assert.throws(() => createPactServerRuntimeFromEnv({ env: {} }), /PACT_RUNTIME_REDIS_URL_REQUIRED/);
   assert.throws(() => createPactServerRuntimeFromEnv({ env: {
