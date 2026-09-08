@@ -1,0 +1,101 @@
+name: deploy-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact 40-character PACT commit SHA to promote
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: read
+
+env:
+  VERCEL_ORG_ID: team_APBZJjf6iizHCTuseqHosFnU
+  VERCEL_PROJECT_ID: prj_4a7E35CAWFjsdq04HieKX5VUvv6V
+  PACT_PRODUCTION_URL: https://pact-webmcp.vercel.app
+  PACT_SOURCE_COMMIT: ${{ inputs.release_sha }}
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+concurrency:
+  group: pact-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy exact verified release
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate release input and deploy credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${PACT_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "PACT_RELEASE_SHA_INVALID" >&2
+            exit 1
+          fi
+          if [[ -z "${VERCEL_TOKEN:-}" ]]; then
+            echo "VERCEL_TOKEN_REQUIRED" >&2
+            exit 1
+          fi
+
+      - name: Check out exact release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Prove checkout belongs to the hardening branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${PACT_SOURCE_COMMIT}" || {
+            echo "PACT_RELEASE_CHECKOUT_MISMATCH" >&2
+            exit 1
+          }
+          git fetch --no-tags origin hardening/real-rest-provider-20260905
+          git merge-base --is-ancestor "${PACT_SOURCE_COMMIT}" FETCH_HEAD || {
+            echo "PACT_RELEASE_NOT_ON_HARDENING_BRANCH" >&2
+            exit 1
+          }
+
+      - name: Require successful verification for exact release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          successes="$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${PACT_SOURCE_COMMIT}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "verify" and .conclusion == "success")] | length')"
+          if [[ "${successes}" -lt 1 ]]; then
+            echo "PACT_RELEASE_CI_NOT_GREEN" >&2
+            exit 1
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify repository before deployment
+        run: npm run verify
+
+      - name: Pull production project configuration
+        run: npx --yes vercel@59.11.7 pull --yes --environment=production --token="${VERCEL_TOKEN}"
+
+      - name: Build production artifact
+        run: npx --yes vercel@59.11.7 build --prod --token="${VERCEL_TOKEN}"
+
+      - name: Deploy prebuilt artifact to production
+        run: >-
+          npx --yes vercel@59.11.7 deploy --prebuilt --prod
+          --env PACT_SOURCE_COMMIT=${PACT_SOURCE_COMMIT}
+          --token="${VERCEL_TOKEN}"
+
+      - name: Verify live production release
+        env:
+          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: npm run verify:production
