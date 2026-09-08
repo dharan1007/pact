@@ -1,0 +1,13 @@
+* @dharan1007
+
+/SECURITY.md @dharan1007
+/pact-manifest.json @dharan1007
+/schema/ @dharan1007
+/.github/workflows/ @dharan1007
+/src/api-authority.js @dharan1007
+/src/authority.js @dharan1007
+/src/server-approval.js @dharan1007
+/src/durable-state.js @dharan1007
+/src/canonical-store.js @dharan1007
+/src/redis-store.js @dharan1007
+/src/provenance.js @dharan1007
