@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security reporting policy
+    url: https://github.com/dharan1007/pact/security/policy
+    about: Approval, authority, replay, secrets, receipt-integrity and provenance vulnerabilities must not be disclosed publicly.
+  - name: Live developer documentation
+    url: https://pact-webmcp.vercel.app/developers/
+    about: Read the canonical transaction and integration documentation before opening an architecture question.
