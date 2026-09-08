@@ -1,4 +1,12 @@
 const fail = code => { throw new Error(code); };
+const REQUIRED_SITE_ROUTES = Object.freeze([
+  '/',
+  '/demo/',
+  '/workspace/',
+  '/how-it-works/',
+  '/security/',
+  '/developers/'
+]);
 
 function normalizeBaseUrl(value) {
   let url;
@@ -31,6 +39,26 @@ function header(response, name) {
   if (!response?.headers || typeof response.headers.get !== 'function') return '';
   const value = response.headers.get(name);
   return value == null ? '' : String(value).trim();
+}
+
+async function verifySiteRoutes({ base, fetchImpl }) {
+  for (const route of REQUIRED_SITE_ROUTES) {
+    let response;
+    try {
+      response = await fetchImpl(`${base}${route}`, {
+        method: 'GET',
+        headers: { accept: 'text/html', 'cache-control': 'no-cache' }
+      });
+    } catch (cause) {
+      throw new Error('PACT_PRODUCTION_SITE_UNAVAILABLE', { cause });
+    }
+    if (!response?.ok || !header(response, 'content-type').toLowerCase().startsWith('text/html')) {
+      fail('PACT_PRODUCTION_SITE_UNAVAILABLE');
+    }
+    let body;
+    try { body = await response.text(); } catch { fail('PACT_PRODUCTION_SITE_UNAVAILABLE'); }
+    if (typeof body !== 'string' || body.trim() === '') fail('PACT_PRODUCTION_SITE_UNAVAILABLE');
+  }
 }
 
 export async function verifyProductionDeployment({
@@ -78,10 +106,13 @@ export async function verifyProductionDeployment({
   const authoritySha = normalizeSha(header(authorityResponse, 'x-pact-release'), 'PACT_PRODUCTION_AUTHORITY_RELEASE_INVALID');
   if (authoritySha !== expectedSha) fail('PACT_PRODUCTION_AUTHORITY_RELEASE_MISMATCH');
 
+  await verifySiteRoutes({ base, fetchImpl });
+
   return Object.freeze({
     baseUrl: base,
     releaseSha: deployedSha,
     authorityReachable: true,
+    siteRoutesVerified: [...REQUIRED_SITE_ROUTES],
     sourceRepository: provenance.sourceRepository,
     buildContract: provenance.buildContract
   });
