@@ -6,6 +6,12 @@ const clone = value => value === undefined ? undefined : structuredClone(value);
 
 function versionOnlyCasStore() {
   const data = new Map();
+  let sameVersionArrivals = 0;
+  let releaseSameVersionWriters;
+  const sameVersionGate = new Promise(resolve => {
+    releaseSameVersionWriters = resolve;
+  });
+
   return {
     async get(key) {
       return clone(data.get(key) ?? null);
@@ -18,11 +24,19 @@ function versionOnlyCasStore() {
     async compareAndSwap(key, expectedVersion, value) {
       const current = data.get(key);
       if (!current || current.version !== expectedVersion) return false;
-      // Yield so two writers that observed the same version can race exactly
-      // like a version-only remote CAS implementation.
-      await new Promise(resolve => setImmediate(resolve));
-      const afterYield = data.get(key);
-      if (!afterYield || afterYield.version !== expectedVersion) return false;
+
+      // The production Redis store accepts a CAS whenever current.version
+      // equals expectedVersion. A metadata-only update that keeps version
+      // unchanged therefore allows two writers to overwrite one another.
+      // Force both such writers to arrive before either persists its value.
+      if (value.version === expectedVersion) {
+        sameVersionArrivals += 1;
+        if (sameVersionArrivals === 2) releaseSameVersionWriters();
+        await sameVersionGate;
+      }
+
+      const afterGate = data.get(key);
+      if (!afterGate || afterGate.version !== expectedVersion) return false;
       data.set(key, clone(value));
       return true;
     }
