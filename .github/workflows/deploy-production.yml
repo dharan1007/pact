@@ -89,6 +89,16 @@ jobs:
       - name: Pull production project configuration
         run: npx --yes vercel@59.11.7 pull --yes --environment=production --token="${VERCEL_TOKEN}"
 
+      - name: Export production smoke configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes vercel@59.11.7 env pull .pact-production.env --yes --environment=production --token="${VERCEL_TOKEN}"
+          test -s .pact-production.env || {
+            echo "PACT_PRODUCTION_ENV_PULL_FAILED" >&2
+            exit 1
+          }
+
       - name: Build production artifact
         run: npx --yes vercel@59.11.7 build --prod --token="${VERCEL_TOKEN}"
 
@@ -117,6 +127,23 @@ jobs:
           PACT_PRODUCTION_URL: ${{ steps.stage.outputs.deployment_url }}
           PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
         run: npm run verify:production
+
+      - name: Execute real provider transaction before promotion
+        env:
+          PACT_STAGED_URL: ${{ steps.stage.outputs.deployment_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source .pact-production.env
+          set +a
+          export PACT_PRODUCTION_URL="${PACT_STAGED_URL}"
+          npm run verify:production-smoke
+
+      - name: Remove pulled production environment
+        if: always()
+        shell: bash
+        run: rm -f .pact-production.env
 
       - name: Promote verified staged deployment
         run: >-
