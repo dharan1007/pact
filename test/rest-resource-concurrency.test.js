@@ -4,14 +4,8 @@ import { createPactRestResourceBridge } from '../src/rest-resource.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
 
-function versionOnlyCasStore() {
+function strictMonotonicCasStore() {
   const data = new Map();
-  let sameVersionArrivals = 0;
-  let releaseSameVersionWriters;
-  const sameVersionGate = new Promise(resolve => {
-    releaseSameVersionWriters = resolve;
-  });
-
   return {
     async get(key) {
       return clone(data.get(key) ?? null);
@@ -24,19 +18,9 @@ function versionOnlyCasStore() {
     async compareAndSwap(key, expectedVersion, value) {
       const current = data.get(key);
       if (!current || current.version !== expectedVersion) return false;
-
-      // The production Redis store accepts a CAS whenever current.version
-      // equals expectedVersion. A metadata-only update that keeps version
-      // unchanged therefore allows two writers to overwrite one another.
-      // Force both such writers to arrive before either persists its value.
-      if (value.version === expectedVersion) {
-        sameVersionArrivals += 1;
-        if (sameVersionArrivals === 2) releaseSameVersionWriters();
-        await sameVersionGate;
+      if (!Number.isSafeInteger(value?.version) || value.version <= expectedVersion) {
+        throw new Error('NON_ADVANCING_CAS');
       }
-
-      const afterGate = data.get(key);
-      if (!afterGate || afterGate.version !== expectedVersion) return false;
       data.set(key, clone(value));
       return true;
     }
@@ -70,8 +54,8 @@ function providerHarness() {
   };
 }
 
-test('concurrent recovered commits preserve every idempotency replay across later provider drift', async () => {
-  const store = versionOnlyCasStore();
+test('concurrent recovered commits preserve every idempotency replay while CAS revisions remain monotonic', async () => {
+  const store = strictMonotonicCasStore();
   const provider = providerHarness();
   const bridge = createPactRestResourceBridge({
     store,
@@ -96,9 +80,10 @@ test('concurrent recovered commits preserve every idempotency replay across late
   });
 
   await Promise.all([commit('pact_auth_a'), commit('pact_auth_b')]);
+  assert.deepEqual(await bridge.read(), nextState);
 
   // Once the provider moves on, only the durable replay ledger can prove both
-  // already-resolved commits. Losing either replay turns its retry into stale.
+  // already-resolved commits. Both keys must still replay without a write.
   provider.drift({ profile: { name: 'Grace' }, enabled: false });
 
   assert.deepEqual(await commit('pact_auth_a'), nextState);
