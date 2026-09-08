@@ -21,7 +21,7 @@ test('production deploy workflow pins the reviewed release SHA and existing Verc
   assert.match(text, /PACT_PRODUCTION_URL:\s*https:\/\/pact-webmcp\.vercel\.app/);
 });
 
-test('production deploy workflow fails closed on missing deploy credentials and verifies the live release after promotion', async () => {
+test('production deploy workflow fails closed on missing deploy credentials and stages before production promotion', async () => {
   const text = await workflowText();
 
   assert.match(text, /secrets\.VERCEL_TOKEN/);
@@ -29,7 +29,20 @@ test('production deploy workflow fails closed on missing deploy credentials and 
   assert.match(text, /PACT_RELEASE_CI_NOT_GREEN/);
   assert.match(text, /vercel@59\.11\.7\s+pull/);
   assert.match(text, /vercel@59\.11\.7\s+build\s+--prod/);
-  assert.match(text, /vercel@59\.11\.7\s+deploy\s+--prebuilt\s+--prod/);
+  assert.match(text, /vercel@59\.11\.7\s+deploy\s+--prebuilt\s+--prod\s+--skip-domain/);
   assert.match(text, /--env\s+PACT_SOURCE_COMMIT=/);
-  assert.match(text, /npm\s+run\s+verify:production/);
+  assert.match(text, /id:\s*stage/);
+  assert.match(text, /deployment_url/);
+  assert.match(text, /PACT_PRODUCTION_URL:\s*\$\{\{\s*steps\.stage\.outputs\.deployment_url\s*\}\}/);
+  assert.match(text, /vercel@59\.11\.7\s+promote\s+\$\{\{\s*steps\.stage\.outputs\.deployment_url\s*\}\}\s+--yes/);
+
+  const stageIndex = text.indexOf('--skip-domain');
+  const stagedVerifyIndex = text.indexOf('steps.stage.outputs.deployment_url');
+  const promoteIndex = text.indexOf(' promote ');
+  const finalVerifyIndex = text.lastIndexOf('npm run verify:production');
+
+  assert.ok(stageIndex >= 0, 'staged deployment must exist');
+  assert.ok(stagedVerifyIndex > stageIndex, 'immutable staged deployment must be verified after deployment');
+  assert.ok(promoteIndex > stagedVerifyIndex, 'promotion must happen only after staged verification');
+  assert.ok(finalVerifyIndex > promoteIndex, 'production alias must be re-verified after promotion');
 });
