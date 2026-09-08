@@ -9,6 +9,7 @@
     "build": "node scripts/build.mjs",
     "verify:prebuilt": "node scripts/verify-prebuilt.mjs",
     "verify:production": "node scripts/verify-production.mjs",
+    "verify:production-smoke": "node scripts/verify-production-smoke.mjs",
     "verify": "npm test && npm run check && npm run build && for f in dist/*.bundle.js; do node --check \"$f\" || exit 1; done"
   }
 }
