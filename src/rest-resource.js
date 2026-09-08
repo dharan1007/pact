@@ -85,6 +85,14 @@ function validateRecord(value) {
       typeof value.etag !== 'string' || !value.etag || !isPlainObject(value.resource) || !Array.isArray(value.replays)) {
     fail('PACT_REST_CORRUPT_RECORD');
   }
+
+  const canonicalVersion = Object.prototype.hasOwnProperty.call(value, 'canonicalVersion')
+    ? value.canonicalVersion
+    : value.version;
+  if (!Number.isSafeInteger(canonicalVersion) || canonicalVersion < 0 || canonicalVersion > value.version) {
+    fail('PACT_REST_CORRUPT_RECORD');
+  }
+
   assertJson(value.resource, 'PACT_REST_CORRUPT_RECORD');
   for (const replay of value.replays) {
     if (!isPlainObject(replay) || typeof replay.key !== 'string' || typeof replay.payloadHash !== 'string' || !isPlainObject(replay.snapshot)) {
@@ -94,11 +102,14 @@ function validateRecord(value) {
       fail('PACT_REST_CORRUPT_RECORD');
     }
   }
-  return clone(value);
+
+  const record = clone(value);
+  record.canonicalVersion = canonicalVersion;
+  return record;
 }
 
 function canonicalFromRecord(record) {
-  return { version: record.version, resource: clone(record.resource) };
+  return { version: record.canonicalVersion, resource: clone(record.resource) };
 }
 
 function validateCanonical(value, expectedVersion = null) {
@@ -174,7 +185,13 @@ export function createPactRestResourceBridge({
       const remote = await fetchProvider();
       const raw = await store.get(storeKey);
       if (!raw) {
-        const initial = { version: 0, etag: remote.etag, resource: clone(remote.resource), replays: [] };
+        const initial = {
+          version: 0,
+          canonicalVersion: 0,
+          etag: remote.etag,
+          resource: clone(remote.resource),
+          replays: []
+        };
         if (await store.create(storeKey, initial)) return clone(initial);
         continue;
       }
@@ -185,6 +202,7 @@ export function createPactRestResourceBridge({
       }
       const next = {
         version: current.version + 1,
+        canonicalVersion: current.canonicalVersion + 1,
         etag: remote.etag,
         resource: clone(remote.resource),
         replays: clone(current.replays)
@@ -201,6 +219,7 @@ export function createPactRestResourceBridge({
   async function appendReplay(current, { idempotencyKey, payloadHash, snapshot }) {
     const candidate = {
       ...current,
+      version: current.version + 1,
       replays: [...clone(current.replays), { key: idempotencyKey, payloadHash, snapshot: clone(snapshot) }]
     };
     return store.compareAndSwap(storeKey, current.version, candidate);
@@ -223,11 +242,11 @@ export function createPactRestResourceBridge({
         return clone(replay.snapshot);
       }
 
-      if (current.version === expectedVersion + 1 && same(current.resource, next.resource)) {
+      if (current.canonicalVersion === expectedVersion + 1 && same(current.resource, next.resource)) {
         if (await appendReplay(current, { idempotencyKey, payloadHash, snapshot: next })) return clone(next);
         continue;
       }
-      if (current.version !== expectedVersion) fail('PACT_REST_STALE_PROVIDER_STATE');
+      if (current.canonicalVersion !== expectedVersion) fail('PACT_REST_STALE_PROVIDER_STATE');
 
       let response;
       try {
@@ -258,7 +277,8 @@ export function createPactRestResourceBridge({
       if (!same(resource, next.resource)) fail('PACT_REST_PROVIDER_POSTCONDITION_FAILED');
 
       const candidate = {
-        version: next.version,
+        version: current.version + 1,
+        canonicalVersion: next.version,
         etag,
         resource: clone(resource),
         replays: [...clone(current.replays), { key: idempotencyKey, payloadHash, snapshot: clone(next) }]
