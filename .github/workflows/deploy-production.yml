@@ -92,6 +92,9 @@ jobs:
       - name: Build production artifact
         run: npx --yes vercel@59.11.7 build --prod --token="${VERCEL_TOKEN}"
 
+      - name: Verify exact prebuilt artifact
+        run: npm run verify:prebuilt
+
       - name: Deploy prebuilt artifact to production
         run: >-
           npx --yes vercel@59.11.7 deploy --prebuilt --prod
