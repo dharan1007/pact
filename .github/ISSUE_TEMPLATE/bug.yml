@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible PACT defect that is not a private security vulnerability
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not disclose a vulnerability involving approval/authority/replay/secrets/receipt integrity publicly. Use SECURITY.md for those reports.
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Operation / component
+      options:
+        - inspect
+        - preview
+        - approve
+        - commit
+        - verify
+        - receipt
+        - adapter validation
+        - durable state / recovery
+        - canonical store
+        - Redis store
+        - HTTP connector
+        - WebMCP
+        - release provenance / build
+        - workspace / UI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include transaction state/base version/idempotency behavior as relevant. Remove secrets and real signed approval claims.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or release
+  - type: textarea
+    id: errors
+    attributes:
+      label: Error/result/transaction trace
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: This report does not publicly disclose a security vulnerability or credential.
+          required: true
