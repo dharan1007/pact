@@ -7,9 +7,6 @@ on:
         description: Exact 40-character PACT commit SHA to promote
         required: true
         type: string
-  push:
-    branches:
-      - production-release
 
 permissions:
   contents: read
@@ -19,7 +16,7 @@ env:
   VERCEL_ORG_ID: team_APBZJjf6iizHCTuseqHosFnU
   VERCEL_PROJECT_ID: prj_4a7E35CAWFjsdq04HieKX5VUvv6V
   PACT_PRODUCTION_URL: https://pact-webmcp.vercel.app
-  PACT_SOURCE_COMMIT: ${{ inputs.release_sha || github.sha }}
+  PACT_SOURCE_COMMIT: ${{ inputs.release_sha }}
   VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
 concurrency:
@@ -48,7 +45,7 @@ jobs:
       - name: Check out exact release
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_sha || github.sha }}
+          ref: ${{ inputs.release_sha }}
           fetch-depth: 0
 
       - name: Prove checkout belongs to the hardening branch
@@ -125,7 +122,7 @@ jobs:
       - name: Verify immutable staged deployment before promotion
         env:
           PACT_PRODUCTION_URL: ${{ steps.stage.outputs.deployment_url }}
-          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
+          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha }}
         run: npm run verify:production
 
       - name: Execute real provider transaction before promotion
@@ -148,5 +145,5 @@ jobs:
 
       - name: Verify live production alias after promotion
         env:
-          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
+          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha }}
         run: npm run verify:production
