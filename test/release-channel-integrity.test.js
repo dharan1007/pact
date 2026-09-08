@@ -19,6 +19,14 @@ test('production promotion verifies the exact prebuilt artifact and staged deplo
   assert.match(workflow, /--prod\s+--skip-domain/);
 });
 
+test('production smoke environment is parsed as data instead of executed by the release shell', async () => {
+  const workflow = await file('.github/workflows/deploy-production.yml');
+
+  assert.doesNotMatch(workflow, /\bsource\s+\.pact-production\.env\b/);
+  assert.doesNotMatch(workflow, /\bset\s+-a\b/);
+  assert.match(workflow, /node\s+--env-file=\.pact-production\.env\s+scripts\/verify-production-smoke\.mjs/);
+});
+
 test('repository has a scheduled fail-closed production drift monitor', async () => {
   const workflow = await file('.github/workflows/production-integrity.yml');
 
