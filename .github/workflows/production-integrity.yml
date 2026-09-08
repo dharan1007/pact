@@ -1,0 +1,44 @@
+name: production-integrity
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pact-production-integrity
+  cancel-in-progress: true
+
+jobs:
+  verify-production:
+    name: verify production matches current hardening head
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out current hardening head
+        uses: actions/checkout@v4
+        with:
+          ref: hardening/real-rest-provider-20260905
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bind expected production release to checked-out hardening head
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          [[ "${expected}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "PACT_PRODUCTION_EXPECTED_SHA_INVALID" >&2
+            exit 1
+          }
+          echo "PACT_EXPECTED_RELEASE_SHA=${expected}" >> "${GITHUB_ENV}"
+          echo "PACT_PRODUCTION_URL=https://pact-webmcp.vercel.app" >> "${GITHUB_ENV}"
+
+      - name: Verify live production release identity and authority surface
+        run: npm run verify:production
