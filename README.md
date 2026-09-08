@@ -1,81 +1,101 @@
-# PACT — Transactional WebMCP
+# PACT
 
-PACT is an experimental trust and transaction layer for consequential browser-agent actions. It binds a human-approved semantic plan to canonical state, commits under short-lived authority, verifies the resulting state, and emits a tamper-evident receipt.
+**Transactional safety for AI-agent actions that change real state.**
 
-## What is real in this repository
+PACT turns a consequential agent action into an explicit transaction:
 
-- `src/webmcp.js` — imperative WebMCP bridge targeting the current `document.modelContext` API. It registers state-dependent tools, current security annotations, abort-driven lifecycle cleanup and structured JavaScript results.
-- `src/http.js` — reusable HTTPS REST connector for the canonical PACT `/api/pact` authority endpoint. Consequential commit calls fail closed unless the caller supplies a non-empty idempotency key; caller cancellation and connector deadlines are distinct errors.
-- `src/adapter.js` — executable adapter contract and defensive declarative-plan validator. Adapters must expose `describe`, `plan` and `verify`; plans are bounded to validated effects and invariants.
-- `src/api-authority.js` — canonical server authority service implementing `preview`, authenticated `approve`, one-shot `commit`, `verify`, `receipt`, and `inspect` semantics over durable transaction state.
-- `src/durable-state.js` — journaled durable transaction-state abstraction with persistent replay records, monotonic recovery validation, CAS transitions and fail-closed corrupt-record handling.
-- `src/canonical-store.js` — durable canonical application-state repository with atomic version CAS, persistent exact-replay snapshots, stale-write rejection and single-winner concurrency.
-- `src/authority.js` — server-side short-lived single-use commit capability primitive bound to transaction, plan, canonical version and identity claims.
-- `src/server-approval.js` — HMAC-SHA256 approval verifier binding approval claims to transaction ID, plan hash, base version, adapter, principal, agent session, nonce and expiry.
-- `src/redis-store.js` — Redis-compatible HTTPS REST atomic store using `SET ... NX` for creation and Lua compare-and-swap for cross-instance atomicity.
-- `src/server-runtime.js` — production composition of the generic adapter, durable authority/journal, canonical store, authenticated approval verifier and HTTP handler.
-- `api/pact.js` — Vercel Function entrypoint for the canonical authority service. It fails closed when durable Redis configuration, approval secret or exact release SHA are unavailable.
-- `src/playground.js` + `/workspace/` — generic HTTP playground showing request, plan, approval, commit, verification, receipt, protocol errors and durable transaction recovery by ID.
-- `pact-manifest.json` — machine-readable product, compatibility, adapter, authority, durability and HTTP semantics manifest.
-- `schema/pact-manifest.schema.json` — JSON Schema for the product manifest.
-- `schema/pact-adapter.schema.json` — JSON Schema for adapter plans.
-- `src/provenance.js` — canonical release-SHA resolver that rejects malformed or conflicting GitHub/Vercel/PACT provenance sources.
-- `scripts/build.mjs` — deterministic release builder that emits release provenance and hashes it into the release-integrity manifest.
+```text
+INTENT
+  ↓
+PREVIEW EXACT PLAN
+  ↓
+HUMAN / TRUSTED APPROVAL
+  ↓
+SHORT-LIVED ONE-SHOT AUTHORITY
+  ↓
+COMMIT
+  ↓
+VERIFY CANONICAL STATE
+  ↓
+TAMPER-EVIDENT RECEIPT
+```
 
-The repository therefore contains a real reference server-side transaction plane, not only a browser simulation. The included production runtime is intentionally generic: its bundled adapter atomically replaces `document.value` in a canonical `pact-generic-v1` document. Real applications should supply domain-specific adapters and canonical state while preserving the same transaction, approval, replay and verification contract.
+It is a reference trust/transaction layer for browser and agent systems where retries, stale state, replay and "the API returned 200" are not sufficient evidence that a consequential action happened correctly.
 
-## Canonical transaction lifecycle
+[**Try PACT**](https://pact-webmcp.vercel.app/) · [Guided demo](https://pact-webmcp.vercel.app/demo/) · [Workspace](https://pact-webmcp.vercel.app/workspace/) · [Security](https://pact-webmcp.vercel.app/security/) · [Developers](https://pact-webmcp.vercel.app/developers/) · [Contributing](CONTRIBUTING.md)
 
-The server-side reference lifecycle is:
+[![verify](https://github.com/dharan1007/pact/actions/workflows/ci.yml/badge.svg)](https://github.com/dharan1007/pact/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+## The problem
+
+Agent systems can already call APIs. The harder problem starts when the call is consequential:
+
+- Was the user shown the exact effects that will be committed?
+- Did canonical state change after preview but before commit?
+- Can an old approval be replayed?
+- Can two concurrent writers both "succeed"?
+- What happens if the target commits and the process crashes before local bookkeeping finishes?
+- Can a retry prove it is the same transaction rather than another mutation?
+- Is there durable evidence of what was approved, committed and verified?
+
+PACT makes those questions first-class protocol/state-machine concerns rather than application-specific afterthoughts.
+
+## Try the transaction lifecycle
+
+The public product separates two useful paths:
+
+- [`/demo/`](https://pact-webmcp.vercel.app/demo/) — guided reference transaction.
+- [`/workspace/`](https://pact-webmcp.vercel.app/workspace/) — generic canonical `/api/pact` playground with transaction recovery by ID.
+
+The server-side lifecycle is:
 
 ```text
 PREVIEWED
-  -> APPROVED
-  -> COMMIT_AUTHORIZED
-  -> COMMITTED
-  -> VERIFIED
+  → APPROVED
+  → COMMIT_AUTHORIZED
+  → COMMITTED
+  → VERIFIED
 ```
 
-`preview` creates the exact semantic plan against a canonical base version. `approve` accepts only a cryptographically authenticated approval claim and issues transaction-bound single-use commit authority. `commit` requires an idempotency key and atomically writes canonical state. `verify` checks the resulting state against the approved intent/plan. `receipt` returns the verified durable receipt. `inspect` allows durable recovery after client or server interruption.
+`preview` binds an exact semantic plan to a canonical base version. `approve` accepts a cryptographically authenticated approval claim. `commit` requires one-shot authority and an idempotency key. `verify` checks canonical state against the approved effects/invariants. `receipt` returns durable verified evidence. `inspect` recovers transaction state after interruption.
 
-A crash after canonical write but before journal completion is explicitly recoverable: PACT resumes only when the observed canonical version, effects and invariants match the authorized transaction. Concurrent retries with the same commit key converge on one physical canonical write; competing base-version writers permit one winner.
+## What PACT protects against
 
-## Product routes and machine-readable surfaces
+| Failure mode | PACT mechanism |
+|---|---|
+| Stale preview | Base-version binding + canonical CAS |
+| Approval replay | Expiring transaction/plan/version/identity-bound approval claims |
+| Capability replay | Short-lived single-use commit authority |
+| Ambiguous retries | Required idempotency key + exact replay semantics |
+| Concurrent writers | Atomic canonical compare-and-swap |
+| Target commit then crash | Recovery reconciles observed canonical state with the authorized transaction |
+| Plan tampering | Stable plan hash bound into approval/authority |
+| Wrong principal/session | Identity claims bound to approval and authority |
+| Audit ambiguity | Durable transaction records + verified receipt |
+| Untrusted agent content | Explicit protocol/security boundary rather than trusting prose confirmation |
 
-- `/` — product thesis and product boundary
-- `/demo/` — guided reference transaction
-- `/workspace/` — canonical generic `/api/pact` playground with recovery
-- `/how-it-works/` — protocol lifecycle
-- `/security/` — threat model and enforced invariants
-- `/developers/` — SDK, HTTP and WebMCP integration guidance
-- `/pact-manifest.json` — machine-readable compatibility manifest
-- `/schema/pact-manifest.schema.json` — product manifest schema
-- `/schema/pact-adapter.schema.json` — adapter plan schema
-- `/adapter.bundle.js` — browser-consumable adapter contract/validator
-- `/http.bundle.js` — browser-consumable REST connector
-- `/sdk/runtime.js` — generic adapter-driven runtime
-- `/sdk/api-authority.js` — canonical server authority service
-- `/sdk/http-handler.js` — canonical HTTP request handler
-- `/sdk/server-runtime.js` — production server runtime composition
-- `/sdk/server-approval.js` — authenticated approval verifier
-- `/sdk/durable-state.js` — durable transaction/journal store
-- `/sdk/canonical-store.js` — durable canonical state repository
-- `/sdk/authority.js` — one-shot authority primitive
-- `/sdk/redis-store.js` — Redis-compatible atomic store
-- `/sdk/provenance.js` — release provenance resolver
-- `/release-provenance.json` — generated source provenance for the built artifact
+## What is implemented in this repository
 
-## WebMCP compatibility
+- `src/adapter.js` — executable adapter contract and defensive declarative-plan validator.
+- `src/api-authority.js` — canonical authority service implementing `preview`, authenticated `approve`, one-shot `commit`, `verify`, `receipt` and `inspect`.
+- `src/durable-state.js` — journaled durable transaction state with monotonic recovery validation, CAS transitions and fail-closed corrupt-record handling.
+- `src/canonical-store.js` — canonical state repository with atomic version CAS and exact-replay snapshots.
+- `src/authority.js` — transaction/plan/version/identity-bound single-use commit capability.
+- `src/server-approval.js` — HMAC-SHA256 approval verification bound to transaction, plan hash, base version, adapter, principal, agent session, nonce and expiry.
+- `src/redis-store.js` — Redis-compatible HTTPS REST atomic store with create-if-absent and Lua compare-and-swap semantics.
+- `src/http.js` — reusable HTTPS connector for the canonical PACT authority endpoint with explicit timeout/cancellation separation.
+- `src/webmcp.js` — browser WebMCP bridge using state-dependent tool registration and abort-driven cleanup.
+- `src/server-runtime.js` — production composition of adapter, durable authority/journal, canonical store, authenticated approval verifier and HTTP handler.
+- `api/pact.js` — Vercel Function entry point for the canonical authority service.
+- `pact-manifest.json` plus schemas — machine-readable product/adapter compatibility contract.
+- release provenance generation and integrity checks.
 
-PACT targets the experimental imperative WebMCP API surface at `document.modelContext.registerTool()`. Tool definitions use explicit names, titles, descriptions, closed JSON input schemas and the current annotation fields `readOnlyHint` and `untrustedContentHint`. PACT also observes the execution callback `AbortSignal` and owns registration cleanup through an `AbortController`.
+The included runtime is intentionally generic. Its bundled adapter atomically replaces `document.value` in a canonical `pact-generic-v1` document. Real applications should provide domain-specific adapters and canonical state while preserving the transaction/approval/replay/verification contract.
 
-PACT does not emit a `consequentialHint` annotation because that field is not part of the current WebMCP annotation dictionary targeted by this repository. Consequential-action protection is enforced by PACT's own transaction/authority layer instead of being represented as a WebMCP guarantee.
+## Adapter model
 
-Imperative tool callbacks return normal JavaScript values. PACT deliberately does not wrap them in an MCP `content[]` envelope because the current WebMCP draft defines the browser/user agent as the layer that serializes tool execution results.
-
-WebMCP remains an experimental Community Group draft and is subject to change. Recheck the live draft before production adoption.
-
-## Adapter contract
+An adapter describes the domain, plans bounded declarative effects and verifies resulting state.
 
 ```js
 import { definePactAdapter } from './src/adapter.js';
@@ -83,9 +103,14 @@ import { definePactAdapter } from './src/adapter.js';
 const adapter = definePactAdapter({
   id: 'projects.v1',
   version: '1.0.0',
+
   describe() {
-    return { name: 'Project ownership', operations: ['transfer_owner'] };
+    return {
+      name: 'Project ownership',
+      operations: ['transfer_owner']
+    };
   },
+
   async plan({ intent, state }) {
     return {
       effects: [{
@@ -93,9 +118,13 @@ const adapter = definePactAdapter({
         before: state.projects[intent.projectId].owner,
         after: intent.newOwner
       }],
-      invariants: [{ path: 'billing.plan', equals: state.billing.plan }]
+      invariants: [{
+        path: 'billing.plan',
+        equals: state.billing.plan
+      }]
     };
   },
+
   async verify({ state, plan }) {
     return plan.effects.every(effect =>
       effect.path.split('.').reduce((node, key) => node?.[key], state) === effect.after
@@ -104,86 +133,147 @@ const adapter = definePactAdapter({
 });
 ```
 
-The validator rejects unsafe prototype-related paths, duplicate effect paths, non-JSON values and unbounded effect/invariant sets before a plan can be accepted as an adapter plan.
+The validator rejects unsafe prototype-related paths, duplicate effect paths, non-JSON values and unbounded effect/invariant sets before a plan is accepted.
 
-## Canonical HTTP connector
+## Canonical HTTPS connector
 
 ```js
 import { createPactHttpConnector } from './src/http.js';
 
-const pact = createPactHttpConnector({ baseUrl: 'https://your-app.example' });
-const request = new AbortController();
+const pact = createPactHttpConnector({
+  baseUrl: 'https://your-app.example'
+});
 
 const preview = await pact.preview({
   adapterId: 'pact.generic',
-  intent: { value: { project: 'helios', owner: 'maya' } }
-}, { signal: request.signal });
+  intent: {
+    value: { project: 'helios', owner: 'maya' }
+  }
+});
 
 const transactionId = preview.transactionId ?? preview.transaction?.id;
 
-// Approval must be produced by your trusted approval/authentication boundary.
 const approved = await pact.approve({
   transactionId,
   approval: signedApprovalClaim
-}, { signal: request.signal });
+});
 
-const committed = await pact.commit(
+await pact.commit(
   { transactionId, capability: approved.capability },
-  `commit:${transactionId}`,
-  { signal: request.signal }
+  `commit:${transactionId}`
 );
 
-const verified = await pact.verify({ transactionId }, { signal: request.signal });
-const receipt = await pact.receipt({ transactionId }, { signal: request.signal });
+await pact.verify({ transactionId });
+const receipt = await pact.receipt({ transactionId });
 ```
 
-The canonical HTTP surface is exactly `inspect`, `preview`, `approve`, `commit`, `verify`, and `receipt`. The connector refuses insecure remote HTTP origins; plain HTTP is accepted only for localhost development. `commit` requires an explicit idempotency key so retries cannot silently degrade into ambiguous repeated consequential requests. Caller cancellation raises `PACT_HTTP_ABORTED`; the connector's own deadline raises `PACT_HTTP_TIMEOUT`.
+Approval must come from the application's trusted authentication/approval boundary. The connector intentionally does not manufacture approval on behalf of the user.
 
-## Production server configuration
+## Crash and replay semantics
 
-The Vercel Function runtime intentionally fails closed unless all production authority prerequisites are present:
+PACT distinguishes several cases that are often collapsed into "retry":
+
+1. same idempotency key + same authorized transaction → converge on the original result,
+2. same key + different payload → reject,
+3. changed canonical base version → reject stale writer,
+4. canonical write observed after a crash before journal completion → reconcile only when canonical version/effects/invariants match the authorized transaction,
+5. malformed/non-monotonic durable state → fail closed.
+
+Those behaviors are covered by the checked-in tests; they are not informal guarantees derived from the UI demo.
+
+## Production runtime requirements
+
+The Vercel authority runtime fails closed unless the configured production prerequisites are present:
 
 ```text
-UPSTASH_REDIS_REST_URL   HTTPS Redis REST endpoint
-UPSTASH_REDIS_REST_TOKEN Redis REST bearer token
-PACT_APPROVAL_SECRET     strong server-only approval HMAC secret
-VERCEL_GIT_COMMIT_SHA    exact 40-hex source SHA supplied by Git-linked Vercel deployment
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+PACT_APPROVAL_SECRET
+VERCEL_GIT_COMMIT_SHA
 ```
 
-`PACT_SOURCE_COMMIT` and `GITHUB_SHA` are also recognized provenance sources. If more than one source is present they must all resolve to the same exact SHA; disagreement fails the build/runtime closed.
+`PACT_SOURCE_COMMIT` and `GITHUB_SHA` are recognized provenance sources. If multiple sources are present they must resolve to the same exact source SHA.
 
-`vercel.json` runs `npm run build`, publishes `dist`, and retains `api/pact.js` as the serverless Function. Do not deploy a locally copied artifact without an exact source SHA. A production release should be accepted only when the live `/release-provenance.json` and `x-pact-release` API header both match the intended Git commit.
+A production release should be accepted only when the deployed provenance artifact and API release header match the intended Git commit and a real provider transaction passes the release verification path.
 
-## Security and durability properties covered by tests
+## WebMCP
 
-The verification suite exercises, among other cases:
+PACT also exposes the transaction lifecycle to browser agents through the experimental imperative WebMCP producer API at `document.modelContext.registerTool()` when available.
 
-- exact plan/canonical-version binding
-- cryptographically authenticated approval claims
-- transaction/plan/version/identity-bound one-shot capabilities
-- persistent idempotency and exact replay
-- same-key/different-payload replay rejection
-- canonical CAS and single-winner concurrency
-- crash recovery after canonical write before journal completion
-- stale state rejection
-- approval expiry and malformed/forged approval rejection
-- corrupt/non-monotonic durable-record rejection
-- receipt and audit integrity
-- HTTP method/media-type/error/header behavior
-- HTTPS-only remote connector behavior
-- cancellation vs timeout distinction
-- current imperative WebMCP registration and cancellation contract
-- generic playground durable recovery by transaction ID
-- release packaging and deterministic provenance hashing
-- malformed/conflicting source-SHA rejection
-- Vercel `dist` + `/api/pact` release contract
+WebMCP is not itself PACT's authorization mechanism. Consequential-action safety comes from PACT's transaction/approval/authority/state contract. Browser tool registration is only one integration surface.
 
-These tests establish the behavior of the checked-in implementation. They are not a substitute for live production verification of the configured Redis provider, secret management, Vercel deployment identity, network behavior, or operational limits.
+Because WebMCP remains experimental, compatibility claims should be rechecked against the current draft when changing this integration.
 
-## Verification
+## Machine-readable surfaces
+
+- `/pact-manifest.json`
+- `/schema/pact-manifest.schema.json`
+- `/schema/pact-adapter.schema.json`
+- `/adapter.bundle.js`
+- `/http.bundle.js`
+- `/sdk/runtime.js`
+- `/sdk/api-authority.js`
+- `/sdk/http-handler.js`
+- `/sdk/server-runtime.js`
+- `/sdk/server-approval.js`
+- `/sdk/durable-state.js`
+- `/sdk/canonical-store.js`
+- `/sdk/authority.js`
+- `/sdk/redis-store.js`
+- `/sdk/provenance.js`
+- `/release-provenance.json`
+
+## Verify locally
 
 ```bash
+git clone https://github.com/dharan1007/pact.git
+cd pact
+npm install
 npm run verify
 ```
 
-The release gate runs the Node test suite, JavaScript syntax checks, the deterministic production build, release contract assertions and generated bundle syntax validation.
+`npm run verify` runs the Node tests, syntax checks, deterministic production build, release-contract assertions and generated bundle syntax validation.
+
+## Security testing areas
+
+The suite covers, among other cases:
+
+- exact plan/base-version binding,
+- authenticated approval claims,
+- one-shot transaction-bound capabilities,
+- persistent idempotency and exact replay,
+- same-key/different-payload rejection,
+- canonical CAS and single-winner concurrency,
+- crash recovery after canonical write before journal completion,
+- stale-state rejection,
+- approval expiry/forgery rejection,
+- corrupt/non-monotonic durable record rejection,
+- receipt/audit integrity,
+- HTTPS-only remote connector behavior,
+- cancellation versus timeout,
+- WebMCP registration/cancellation behavior,
+- deterministic source provenance.
+
+These tests prove behavior of the checked-in implementation. They are not a substitute for verifying the configured Redis provider, secret management, deployment identity, network behavior and operational limits.
+
+## Contributing
+
+PACT especially benefits from domain adapters, property/fault-injection tests, durable-store implementations, protocol/security review and integration examples. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and start with [`good first issue`](https://github.com/dharan1007/pact/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/dharan1007/pact/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
+
+Security-sensitive findings should follow [`SECURITY.md`](SECURITY.md) when present or the repository's security policy rather than being disclosed as a public exploit issue.
+
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md). The priority is to prove PACT across multiple real domain adapters/providers without weakening transaction invariants.
+
+## Related projects
+
+- [KATA](https://github.com/dharan1007/kata) — reusable deterministic research workflows for agents.
+- [SPOOL](https://github.com/dharan1007/spool) — deterministic local-first data migration.
+- [FAULTLINE](https://github.com/dharan1007/faultline) — causal browser-failure reduction.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+If you believe consequential agent actions need transaction semantics rather than best-effort API calls, star PACT to follow the work and help other agent-infrastructure builders discover the project.
