@@ -8,7 +8,7 @@ async function workflowText() {
   return readFile(WORKFLOW, 'utf8');
 }
 
-test('production deploy workflow requires explicit dispatch of an exact reviewed SHA', async () => {
+test('production deploy workflow requires explicit dispatch of the exact current hardening head', async () => {
   const text = await workflowText();
 
   assert.match(text, /workflow_dispatch:/);
@@ -17,6 +17,10 @@ test('production deploy workflow requires explicit dispatch of an exact reviewed
   assert.doesNotMatch(text, /production-release/);
   assert.match(text, /PACT_SOURCE_COMMIT:\s*\$\{\{\s*inputs\.release_sha\s*\}\}/);
   assert.match(text, /ref:\s*\$\{\{\s*inputs\.release_sha\s*\}\}/);
+  assert.match(text, /git fetch --no-tags origin hardening\/real-rest-provider-20260905/);
+  assert.match(text, /test "\$\{PACT_SOURCE_COMMIT\}" = "\$\(git rev-parse FETCH_HEAD\)"/);
+  assert.match(text, /PACT_RELEASE_NOT_CURRENT_HARDENING_HEAD/);
+  assert.doesNotMatch(text, /git merge-base --is-ancestor/);
   assert.match(text, /VERCEL_ORG_ID:\s*team_APBZJjf6iizHCTuseqHosFnU/);
   assert.match(text, /VERCEL_PROJECT_ID:\s*prj_4a7E35CAWFjsdq04HieKX5VUvv6V/);
   assert.match(text, /PACT_PRODUCTION_URL:\s*https:\/\/pact-webmcp\.vercel\.app/);
