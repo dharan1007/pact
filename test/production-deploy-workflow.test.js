@@ -8,14 +8,15 @@ async function workflowText() {
   return readFile(WORKFLOW, 'utf8');
 }
 
-test('production deploy workflow pins the reviewed release SHA and existing Vercel project', async () => {
+test('production deploy workflow requires explicit dispatch of an exact reviewed SHA', async () => {
   const text = await workflowText();
 
   assert.match(text, /workflow_dispatch:/);
   assert.match(text, /release_sha:/);
-  assert.match(text, /production-release/);
-  assert.match(text, /PACT_SOURCE_COMMIT:\s*\$\{\{[\s\S]*inputs\.release_sha[\s\S]*github\.sha[\s\S]*\}\}/);
-  assert.match(text, /ref:\s*\$\{\{[\s\S]*inputs\.release_sha[\s\S]*github\.sha[\s\S]*\}\}/);
+  assert.doesNotMatch(text, /^\s*push:\s*$/m);
+  assert.doesNotMatch(text, /production-release/);
+  assert.match(text, /PACT_SOURCE_COMMIT:\s*\$\{\{\s*inputs\.release_sha\s*\}\}/);
+  assert.match(text, /ref:\s*\$\{\{\s*inputs\.release_sha\s*\}\}/);
   assert.match(text, /VERCEL_ORG_ID:\s*team_APBZJjf6iizHCTuseqHosFnU/);
   assert.match(text, /VERCEL_PROJECT_ID:\s*prj_4a7E35CAWFjsdq04HieKX5VUvv6V/);
   assert.match(text, /PACT_PRODUCTION_URL:\s*https:\/\/pact-webmcp\.vercel\.app/);
