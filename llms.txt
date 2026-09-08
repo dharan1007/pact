@@ -1,0 +1,38 @@
+# PACT
+
+> Transactional safety for consequential AI-agent actions: bind an exact plan to canonical state, authenticate approval, issue one-shot commit authority, commit idempotently, verify authoritative state and emit durable receipt evidence.
+
+Canonical repository: https://github.com/dharan1007/pact
+Live product: https://pact-webmcp.vercel.app/
+Canonical authority endpoint: https://pact-webmcp.vercel.app/api/pact
+
+## Start here
+
+- README: https://github.com/dharan1007/pact/blob/main/README.md
+- Security: https://github.com/dharan1007/pact/blob/main/SECURITY.md
+- Roadmap: https://github.com/dharan1007/pact/blob/main/ROADMAP.md
+- Manifest: https://github.com/dharan1007/pact/blob/main/pact-manifest.json
+- Adapter schema: https://github.com/dharan1007/pact/blob/main/schema/pact-adapter.schema.json
+- Agent bridges: https://github.com/dharan1007/pact/blob/main/docs/agent-bridges.md
+- Contributing: https://github.com/dharan1007/pact/blob/main/CONTRIBUTING.md
+
+## Core facts
+
+- Transaction operations: inspect, preview, approve, commit, verify, receipt.
+- Approval: authenticated and bound to transaction/plan/base-version/identity claims.
+- Commit authority: short-lived and single use.
+- Commit retry identity: explicit idempotency key.
+- Canonical state: atomic version CAS / exact replay semantics.
+- Recovery: reconciles an uncertain post-write crash only against the exact authorized transaction.
+- Deployment: Vercel Function + Redis-compatible HTTPS REST store in the reference runtime.
+- Browser agent integration: experimental WebMCP producer API when supported.
+- Remote MCP Registry: not currently claimed; do not invent an MCP endpoint that bypasses PACT authority.
+- License: MIT.
+
+## Verification
+
+`npm run verify`
+
+## Boundary
+
+PACT proves the checked-in reference transaction behavior. It does not certify arbitrary downstream adapters, identity systems, Redis deployments or business authorization policies.
