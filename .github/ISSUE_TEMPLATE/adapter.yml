@@ -1,0 +1,66 @@
+name: Domain adapter proposal
+description: Propose a real PACT domain adapter with authoritative state and verification
+title: "[Adapter]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: domain
+    attributes:
+      label: Domain and consequential operation
+      description: What real operation should be transacted?
+    validations:
+      required: true
+  - type: textarea
+    id: intent
+    attributes:
+      label: Intent schema
+      description: Describe the bounded caller intent and required identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: Canonical state and version source
+      description: What authoritative state/version is preview bound to?
+    validations:
+      required: true
+  - type: textarea
+    id: effects
+    attributes:
+      label: Effects and invariants
+      description: List what may change and what must remain unchanged.
+    validations:
+      required: true
+  - type: textarea
+    id: approval
+    attributes:
+      label: Approval / identity boundary
+      description: Who can approve, how identity/session is authenticated, and what claims bind the approval?
+    validations:
+      required: true
+  - type: textarea
+    id: retry
+    attributes:
+      label: Idempotency and crash recovery
+      description: How can PACT prove whether an uncertain commit happened and safely reconcile a retry?
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: Canonical verification
+      description: What authoritative read proves the approved result rather than merely confirming HTTP success?
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This proposal identifies authoritative state and post-commit verification.
+          required: true
+        - label: This is more than a thin API wrapper.
+          required: true
+        - label: I searched existing adapters/roadmap issues first.
+          required: true
