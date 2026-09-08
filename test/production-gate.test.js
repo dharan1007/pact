@@ -31,7 +31,9 @@ test('production gate requires exact deployed provenance and an authority route 
         'content-type': 'application/json'
       });
     }
-    return response(404, 'not found');
+    return response(200, '<!doctype html><html><title>PACT</title><body>PACT</body></html>', {
+      'content-type': 'text/html; charset=utf-8'
+    });
   };
 
   const result = await verifyProductionDeployment({
@@ -42,10 +44,37 @@ test('production gate requires exact deployed provenance and an authority route 
 
   assert.equal(result.releaseSha, sha);
   assert.equal(result.authorityReachable, true);
-  assert.deepEqual(calls.map(call => call.url), [
-    'https://pact.example/release-provenance.json',
-    'https://pact.example/api/pact'
-  ]);
+});
+
+test('production gate fails closed when any required public product route is unavailable', async () => {
+  const sha = 'a'.repeat(40);
+  const fetchImpl = async url => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/release-provenance.json') {
+      return response(200, {
+        schema: 1,
+        sourceCommit: sha,
+        sourceRepository: 'https://github.com/dharan1007/pact',
+        buildContract: 'pact-release-v1'
+      });
+    }
+    if (pathname === '/api/pact') {
+      return response(405, '', { allow: 'POST', 'x-pact-release': sha });
+    }
+    if (pathname === '/security/') return response(404, 'missing');
+    return response(200, '<!doctype html><html><title>PACT</title><body>PACT</body></html>', {
+      'content-type': 'text/html; charset=utf-8'
+    });
+  };
+
+  await assert.rejects(
+    () => verifyProductionDeployment({
+      baseUrl: 'https://pact.example',
+      expectedReleaseSha: sha,
+      fetchImpl
+    }),
+    /PACT_PRODUCTION_SITE_UNAVAILABLE/
+  );
 });
 
 test('production gate fails closed on missing or stale provenance and missing or mismatched authority release evidence', async () => {
