@@ -48,7 +48,7 @@ jobs:
           ref: ${{ inputs.release_sha }}
           fetch-depth: 0
 
-      - name: Prove checkout belongs to the hardening branch
+      - name: Prove checkout is the current hardening head
         shell: bash
         run: |
           set -euo pipefail
@@ -57,8 +57,8 @@ jobs:
             exit 1
           }
           git fetch --no-tags origin hardening/real-rest-provider-20260905
-          git merge-base --is-ancestor "${PACT_SOURCE_COMMIT}" FETCH_HEAD || {
-            echo "PACT_RELEASE_NOT_ON_HARDENING_BRANCH" >&2
+          test "${PACT_SOURCE_COMMIT}" = "$(git rev-parse FETCH_HEAD)" || {
+            echo "PACT_RELEASE_NOT_CURRENT_HARDENING_HEAD" >&2
             exit 1
           }
 
