@@ -92,13 +92,38 @@ jobs:
       - name: Build production artifact
         run: npx --yes vercel@59.11.7 build --prod --token="${VERCEL_TOKEN}"
 
-      - name: Deploy prebuilt artifact to production
+      - name: Verify exact prebuilt artifact
+        run: npm run verify:prebuilt
+
+      - name: Stage production-configured artifact without assigning production domains
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployment_url="$(
+            npx --yes vercel@59.11.7 deploy --prebuilt --prod --skip-domain \
+              --env PACT_SOURCE_COMMIT=${PACT_SOURCE_COMMIT} \
+              --token="${VERCEL_TOKEN}" \
+              | tail -n 1
+          )"
+          if [[ ! "${deployment_url}" =~ ^https://[^[:space:]]+\.vercel\.app$ ]]; then
+            echo "PACT_STAGED_DEPLOYMENT_URL_INVALID" >&2
+            exit 1
+          fi
+          echo "deployment_url=${deployment_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify immutable staged deployment before promotion
+        env:
+          PACT_PRODUCTION_URL: ${{ steps.stage.outputs.deployment_url }}
+          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
+        run: npm run verify:production
+
+      - name: Promote verified staged deployment
         run: >-
-          npx --yes vercel@59.11.7 deploy --prebuilt --prod
-          --env PACT_SOURCE_COMMIT=${PACT_SOURCE_COMMIT}
+          npx --yes vercel@59.11.7 promote ${{ steps.stage.outputs.deployment_url }} --yes
           --token="${VERCEL_TOKEN}"
 
-      - name: Verify live production release
+      - name: Verify live production alias after promotion
         env:
           PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
         run: npm run verify:production
