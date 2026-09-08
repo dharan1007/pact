@@ -1,0 +1,56 @@
+name: Transaction failure case
+description: Contribute an adversarial/recovery scenario for the public safety test corpus
+title: "[Failure case]: "
+labels:
+  - help wanted
+body:
+  - type: dropdown
+    id: class
+    attributes:
+      label: Failure class
+      options:
+        - Stale preview / TOCTOU
+        - Approval replay / expiry / tampering
+        - Capability replay
+        - Duplicate commit / idempotency collision
+        - Concurrent writers
+        - Target commit then process crash
+        - Durable-record corruption
+        - Verification mismatch
+        - Receipt / provenance mismatch
+        - Provider timeout / uncertain outcome
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Initial state and transaction setup
+    validations:
+      required: true
+  - type: textarea
+    id: interleaving
+    attributes:
+      label: Failure/interleaving sequence
+      description: List the exact ordered events needed to trigger the case.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Required PACT outcome
+      description: What must be rejected, reconciled or verified?
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: Suggested deterministic test shape
+      description: Optional pseudocode/test idea; do not include real secrets.
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Disclosure check
+      options:
+        - label: This is a test-case contribution, not an undisclosed exploitable vulnerability against a live deployment.
+          required: true
