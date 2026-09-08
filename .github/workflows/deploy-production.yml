@@ -130,15 +130,11 @@ jobs:
 
       - name: Execute real provider transaction before promotion
         env:
-          PACT_STAGED_URL: ${{ steps.stage.outputs.deployment_url }}
+          PACT_PRODUCTION_URL: ${{ steps.stage.outputs.deployment_url }}
         shell: bash
         run: |
           set -euo pipefail
-          set -a
-          source .pact-production.env
-          set +a
-          export PACT_PRODUCTION_URL="${PACT_STAGED_URL}"
-          npm run verify:production-smoke
+          node --env-file=.pact-production.env scripts/verify-production-smoke.mjs
 
       - name: Remove pulled production environment
         if: always()
