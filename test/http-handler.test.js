@@ -88,6 +88,28 @@ test('PACT HTTP handler strips routing fields before service dispatch and maps p
   assert.deepEqual(response.body, { error: { code: 'PACT_API_STALE_CANONICAL_STATE' } });
 });
 
+test('PACT HTTP handler exposes recoverable real-provider failure classes without leaking provider bodies', async () => {
+  const cases = [
+    ['PACT_REST_STALE_PROVIDER_STATE', 409],
+    ['PACT_REST_COMMIT_UNCERTAIN', 503],
+    ['PACT_REST_PROVIDER_READ_FAILED', 502],
+    ['PACT_REST_PROVIDER_HTTP_503', 502],
+    ['PACT_REST_PROVIDER_POSTCONDITION_FAILED', 502]
+  ];
+  for (const [code, expectedStatus] of cases) {
+    const service = { async commit() { throw new Error(code); } };
+    const handler = createPactHttpHandler({ service });
+    const response = makeResponse();
+    await handler({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'idem-real-1' },
+      body: { operation: 'commit', payload: { transactionId: 'tx_1', capabilityToken: 'cap_1' } }
+    }, response);
+    assert.equal(response.statusCode, expectedStatus, code);
+    assert.deepEqual(response.body, { error: { code } });
+  }
+});
+
 test('PACT HTTP handler does not leak unexpected exception messages', async () => {
   const service = { async preview() { throw new Error('database password was hunter2'); } };
   const handler = createPactHttpHandler({ service });

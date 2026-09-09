@@ -7,6 +7,8 @@ on:
         description: Exact 40-character PACT commit SHA to promote
         required: true
         type: string
+  push:
+    branches: [production-release]
 
 permissions:
   contents: read
@@ -16,7 +18,6 @@ env:
   VERCEL_ORG_ID: team_APBZJjf6iizHCTuseqHosFnU
   VERCEL_PROJECT_ID: prj_4a7E35CAWFjsdq04HieKX5VUvv6V
   PACT_PRODUCTION_URL: https://pact-webmcp.vercel.app
-  PACT_SOURCE_COMMIT: ${{ inputs.release_sha }}
   VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
 concurrency:
@@ -29,7 +30,64 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Validate release input and deploy credential
+      - name: Read production release request
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          ref: production-release
+          fetch-depth: 1
+          sparse-checkout: release-request.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve and validate release request
+        id: release
+        env:
+          PACT_EVENT_NAME: ${{ github.event_name }}
+          PACT_DISPATCH_SHA: ${{ inputs.release_sha }}
+          PACT_RELEASE_ACTOR: ${{ github.actor }}
+          PACT_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const eventName = process.env.PACT_EVENT_NAME;
+          let releaseSha = process.env.PACT_DISPATCH_SHA || '';
+          if (eventName === 'push') {
+            if (process.env.PACT_RELEASE_ACTOR !== process.env.PACT_REPOSITORY_OWNER) {
+              console.error('PACT_RELEASE_PUSH_ACTOR_FORBIDDEN');
+              process.exit(1);
+            }
+            let request;
+            try {
+              request = JSON.parse(fs.readFileSync('release-request.json', 'utf8'));
+            } catch {
+              console.error('PACT_RELEASE_REQUEST_INVALID');
+              process.exit(1);
+            }
+            const valid = request && request.schema === 1
+              && typeof request.releaseSha === 'string'
+              && /^[0-9a-f]{40}$/.test(request.releaseSha)
+              && typeof request.nonce === 'string'
+              && /^[A-Za-z0-9._-]{16,128}$/.test(request.nonce)
+              && Object.keys(request).every(key => ['schema', 'releaseSha', 'nonce'].includes(key));
+            if (!valid) {
+              console.error('PACT_RELEASE_REQUEST_INVALID');
+              process.exit(1);
+            }
+            releaseSha = request.releaseSha;
+          }
+          if (!/^[0-9a-f]{40}$/.test(releaseSha)) {
+            console.error('PACT_RELEASE_SHA_INVALID');
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_sha=${releaseSha}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PACT_SOURCE_COMMIT=${releaseSha}\n`);
+          NODE
+
+      - name: Validate deploy credential
+        env:
+          PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -45,10 +103,13 @@ jobs:
       - name: Check out exact release
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_sha }}
+          ref: ${{ steps.release.outputs.release_sha }}
           fetch-depth: 0
+          clean: true
 
       - name: Prove checkout is the current hardening head
+        env:
+          PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -65,6 +126,7 @@ jobs:
       - name: Require successful verification for exact release
         env:
           GH_TOKEN: ${{ github.token }}
+          PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -122,7 +184,7 @@ jobs:
       - name: Verify immutable staged deployment before promotion
         env:
           PACT_PRODUCTION_URL: ${{ steps.stage.outputs.deployment_url }}
-          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha }}
+          PACT_EXPECTED_RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
         run: npm run verify:production
 
       - name: Execute real provider transaction before promotion
@@ -145,5 +207,5 @@ jobs:
 
       - name: Verify live production alias after promotion
         env:
-          PACT_EXPECTED_RELEASE_SHA: ${{ inputs.release_sha }}
+          PACT_EXPECTED_RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
         run: npm run verify:production

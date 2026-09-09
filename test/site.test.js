@@ -53,11 +53,47 @@ test('developers page shows the exact HTTP connector API and current WebMCP anno
   assert.match(html, /untrustedContentHint/);
 });
 
-test('developers page documents HTTP idempotency and durable-authority limitation without claiming the static deployment provides it', async () => {
+test('WebMCP developer guidance uses registration AbortSignal and a single-input execute callback', async () => {
+  const html = await readFile('pages/developers.html','utf8');
+  assert.match(html, /execute: async input/);
+  assert.match(html, /registerTool/);
+  assert.match(html, /registration/);
+  assert.match(html, /AbortSignal/);
+  assert.doesNotMatch(html, /execute callback AbortSignal/i);
+  assert.doesNotMatch(html, /execute: async \([^)]*,\s*\{\s*signal/);
+  const readme = await readFile('README.md','utf8');
+  assert.match(readme, /single input object/i);
+  assert.match(readme, /registration.*AbortSignal/i);
+  assert.doesNotMatch(readme, /execution callback AbortSignal/i);
+});
+
+test('developers page documents canonical commit idempotency and durable authority without advertising unsupported rollback', async () => {
   const html = await readFile('pages/developers.html','utf8');
   assert.match(html, /idempotency key/i);
   assert.match(html, /durable atomic store/i);
-  assert.match(html, /static reference deployment does not provide that guarantee yet/i);
+  assert.doesNotMatch(html, /commit and rollback before network I\/O/i);
+  assert.doesNotMatch(html, /VERIFIED[^<]*→[^<]*receipt\/rollback/i);
+});
+
+test('developers page teaches the official real REST provider mode and server-only credential boundary', async () => {
+  const html = await readFile('pages/developers.html','utf8');
+  assert.match(html, /\/sdk\/rest-resource\.js/);
+  assert.match(html, /createPactRestResourceBridge/);
+  assert.match(html, /PACT_RUNTIME_MODE/);
+  assert.match(html, /rest-json/);
+  assert.match(html, /ETag/);
+  assert.match(html, /If-Match/);
+  assert.match(html, /Idempotency-Key/);
+  assert.match(html, /server-side/i);
+});
+
+test('README describes the shipped real-provider runtime mode rather than claiming production is generic-only', async () => {
+  const readme = await readFile('README.md','utf8');
+  assert.match(readme, /src\/rest-resource\.js/);
+  assert.match(readme, /PACT_RUNTIME_MODE/);
+  assert.match(readme, /rest-json/);
+  assert.match(readme, /If-Match/);
+  assert.doesNotMatch(readme, /included production runtime is intentionally generic/i);
 });
 
 test('guided demo explicitly supports durable committed-state recovery', async () => {

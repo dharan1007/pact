@@ -2,10 +2,13 @@ import { definePactAdapter } from './adapter.js';
 import { canonicalStringify } from './engine.js';
 import { createCanonicalStateRepository } from './canonical-store.js';
 import { createPactApiAuthorityService } from './api-authority.js';
+import { createPactSagaAuthorityService } from './saga-protocol.js';
 import { createPactHttpHandler } from './http-handler.js';
 import { createRedisAuthorityStore } from './redis-store.js';
 import { createHmacApprovalVerifier } from './server-approval.js';
 import { resolveReleaseSha } from './provenance.js';
+import { createPactRestResourceBridge, createPactJsonResourceAdapter } from './rest-resource.js';
+import { createPactProviderRegistry, parsePactProviderRegistryConfig } from './provider-registry.js';
 
 const fail = code => { throw new Error(code); };
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -13,6 +16,10 @@ const isPlainObject = value => Boolean(value) && typeof value === 'object' && !A
 function nonEmpty(value, code) {
   if (typeof value !== 'string' || value.trim() === '') fail(code);
   return value.trim();
+}
+
+function optionalString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
 function same(a, b) {
@@ -49,7 +56,38 @@ function createGenericAdapter() {
   });
 }
 
-export function createPactServerRuntime({ store, approvalSecret, releaseSha, now = () => Date.now() } = {}) {
+function validateAdapter(adapter) {
+  if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) fail('PACT_RUNTIME_ADAPTER_REQUIRED');
+  nonEmpty(adapter.id, 'PACT_RUNTIME_ADAPTER_ID_REQUIRED');
+  nonEmpty(adapter.version, 'PACT_RUNTIME_ADAPTER_VERSION_REQUIRED');
+  for (const method of ['plan', 'verify']) {
+    if (typeof adapter[method] !== 'function') fail(`PACT_RUNTIME_ADAPTER_METHOD_REQUIRED:${method}`);
+  }
+  return adapter;
+}
+
+function validateCanonicalBridge(canonical) {
+  if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) fail('PACT_RUNTIME_CANONICAL_BRIDGE_REQUIRED');
+  if (typeof canonical.read !== 'function') fail('PACT_RUNTIME_CANONICAL_READ_REQUIRED');
+  if (typeof canonical.commit !== 'function') fail('PACT_RUNTIME_CANONICAL_COMMIT_REQUIRED');
+  return canonical;
+}
+
+function validateSagaHandlers(handlers) {
+  if (handlers == null) return null;
+  if (!isPlainObject(handlers) || Object.keys(handlers).length < 1) fail('PACT_RUNTIME_SAGA_HANDLERS_REQUIRED');
+  return handlers;
+}
+
+export function createPactServerRuntime({
+  store,
+  approvalSecret,
+  releaseSha,
+  now = () => Date.now(),
+  adapter: suppliedAdapter,
+  canonical: suppliedCanonical,
+  sagaHandlers: suppliedSagaHandlers = null
+} = {}) {
   if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
     fail('PACT_RUNTIME_ATOMIC_STORE_REQUIRED');
   }
@@ -57,18 +95,22 @@ export function createPactServerRuntime({ store, approvalSecret, releaseSha, now
   releaseSha = nonEmpty(releaseSha, 'PACT_RUNTIME_RELEASE_SHA_REQUIRED').toLowerCase();
   if (!/^[a-f0-9]{40}$/.test(releaseSha)) fail('PACT_RUNTIME_INVALID_RELEASE_SHA');
   if (typeof now !== 'function') fail('PACT_RUNTIME_CLOCK_REQUIRED');
+  if ((suppliedAdapter == null) !== (suppliedCanonical == null)) fail('PACT_RUNTIME_PROVIDER_PAIR_REQUIRED');
 
-  const adapter = createGenericAdapter();
-  const canonical = createCanonicalStateRepository({
-    store,
-    key: 'pact:canonical:pact.generic@1.0.0',
-    initialState: {
-      version: 0,
-      document: { kind: 'pact-generic-v1', value: null }
-    }
-  });
+  const adapter = suppliedAdapter == null ? createGenericAdapter() : validateAdapter(suppliedAdapter);
+  const canonical = suppliedCanonical == null
+    ? createCanonicalStateRepository({
+        store,
+        key: 'pact:canonical:pact.generic@1.0.0',
+        initialState: {
+          version: 0,
+          document: { kind: 'pact-generic-v1', value: null }
+        }
+      })
+    : validateCanonicalBridge(suppliedCanonical);
+
   const verifyApproval = createHmacApprovalVerifier({ secret: approvalSecret, now });
-  const service = createPactApiAuthorityService({
+  const transactionService = createPactApiAuthorityService({
     store,
     verifyApproval,
     adapters: [adapter],
@@ -81,12 +123,21 @@ export function createPactServerRuntime({ store, approvalSecret, releaseSha, now
     }),
     now
   });
+  const sagaHandlers = validateSagaHandlers(suppliedSagaHandlers);
+  const sagaService = sagaHandlers == null ? null : createPactSagaAuthorityService({
+    store,
+    verifyApproval,
+    handlers: sagaHandlers,
+    now
+  });
+  const service = sagaService == null ? transactionService : Object.freeze({ ...transactionService, ...sagaService });
   const handler = createPactHttpHandler({ service, releaseSha });
 
   return {
     adapter,
     canonical,
     service,
+    sagaService,
     handler,
     releaseSha
   };
@@ -104,5 +155,53 @@ export function createPactServerRuntimeFromEnv({ env = process.env, fetchImpl = 
     fetchImpl,
     prefix: 'pact:v1:'
   });
-  return createPactServerRuntime({ store, approvalSecret, releaseSha, now });
+
+  const mode = optionalString(env?.PACT_RUNTIME_MODE) || 'generic';
+  if (mode === 'generic') {
+    return createPactServerRuntime({ store, approvalSecret, releaseSha, now });
+  }
+
+  if (mode === 'provider-registry') {
+    const config = parsePactProviderRegistryConfig(env?.PACT_PROVIDER_REGISTRY_JSON);
+    const registry = createPactProviderRegistry({ store, config, env, fetchImpl });
+    const runtime = createPactServerRuntime({
+      store,
+      approvalSecret,
+      releaseSha,
+      now,
+      sagaHandlers: registry.handlers
+    });
+    return Object.freeze({ ...runtime, providerRegistry: registry.providers });
+  }
+
+  if (mode !== 'rest-json') fail('PACT_RUNTIME_MODE_UNSUPPORTED');
+
+  const baseUrl = nonEmpty(env?.PACT_REST_BASE_URL, 'PACT_RUNTIME_REST_BASE_URL_REQUIRED');
+  const resourcePath = nonEmpty(env?.PACT_REST_RESOURCE_PATH, 'PACT_RUNTIME_REST_RESOURCE_PATH_REQUIRED');
+  const resourceKey = nonEmpty(env?.PACT_REST_RESOURCE_KEY, 'PACT_RUNTIME_REST_RESOURCE_KEY_REQUIRED');
+  const adapterId = nonEmpty(env?.PACT_REST_ADAPTER_ID, 'PACT_RUNTIME_REST_ADAPTER_ID_REQUIRED');
+  const adapterVersion = optionalString(env?.PACT_REST_ADAPTER_VERSION) || '1.0.0';
+  const bearerToken = optionalString(env?.PACT_REST_BEARER_TOKEN);
+  const method = optionalString(env?.PACT_REST_METHOD) || 'PUT';
+
+  const headers = bearerToken ? { authorization: `Bearer ${bearerToken}` } : {};
+  const canonical = createPactRestResourceBridge({
+    store,
+    key: resourceKey,
+    baseUrl,
+    resourcePath,
+    fetchImpl,
+    headers,
+    method
+  });
+  const adapter = createPactJsonResourceAdapter({ id: adapterId, version: adapterVersion });
+
+  return createPactServerRuntime({
+    store,
+    approvalSecret,
+    releaseSha,
+    now,
+    adapter,
+    canonical
+  });
 }

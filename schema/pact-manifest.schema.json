@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "provenance", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "integrations", "agentBridges", "provenance", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -14,27 +14,31 @@
     "webmcp": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hostPreference", "transport", "toolsOnly", "requiresSecureContext", "annotations"],
+      "required": ["hostPreference", "transport", "toolsOnly", "requiresSecureContext", "annotations", "executeCallback", "registrationAbortSignal", "executionAbortSignal"],
       "properties": {
         "hostPreference": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "transport": { "const": "in-page" },
         "toolsOnly": { "type": "boolean" },
         "requiresSecureContext": { "type": "boolean" },
-        "annotations": { "type": "array", "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }], "minItems": 2, "maxItems": 2 }
+        "annotations": { "type": "array", "prefixItems": [{ "const": "readOnlyHint" }, { "const": "untrustedContentHint" }], "minItems": 2, "maxItems": 2 },
+        "executeCallback": { "const": "single-input" },
+        "registrationAbortSignal": { "const": true },
+        "executionAbortSignal": { "const": false }
       }
     },
     "http": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["connectorModule", "endpoint", "method", "requestEnvelope", "operations", "idempotencyHeader", "idempotencyRequiredFor"],
+      "required": ["connectorModule", "handlerModule", "endpoint", "method", "requestEnvelope", "operations", "idempotencyHeader", "idempotencyRequiredFor"],
       "properties": {
-        "connectorModule": { "type": "string" },
-        "endpoint": { "type": "string", "pattern": "^/" },
+        "connectorModule": { "const": "./http.bundle.js" },
+        "handlerModule": { "const": "./sdk/http-handler.js" },
+        "endpoint": { "const": "/api/pact" },
         "method": { "const": "POST" },
         "requestEnvelope": { "type": "object" },
-        "operations": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "operations": { "type": "array", "prefixItems": [{"const":"inspect"},{"const":"preview"},{"const":"approve"},{"const":"commit"},{"const":"verify"},{"const":"receipt"}], "minItems": 6, "maxItems": 6 },
         "idempotencyHeader": { "const": "Idempotency-Key" },
-        "idempotencyRequiredFor": { "type": "array", "uniqueItems": true, "items": { "enum": ["commit", "rollback"] }, "minItems": 2, "maxItems": 2 }
+        "idempotencyRequiredFor": { "type": "array", "prefixItems": [{ "const": "commit" }], "minItems": 1, "maxItems": 1 }
       }
     },
     "adapterContract": {
@@ -53,22 +57,27 @@
     "runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "adapterDriven", "approvalVerifierRequired", "stateModel", "receiptBindsApprovalClaims"],
+      "required": ["module", "serverModule", "adapterDriven", "approvalVerifierRequired", "stateModel", "receiptBindsApprovalClaims", "customCanonicalBridge"],
       "properties": {
         "module": { "const": "./sdk/runtime.js" },
+        "serverModule": { "const": "./sdk/server-runtime.js" },
         "adapterDriven": { "const": true },
         "approvalVerifierRequired": { "const": true },
         "stateModel": { "const": "optimistic-versioned" },
-        "receiptBindsApprovalClaims": { "const": true }
+        "receiptBindsApprovalClaims": { "const": true },
+        "customCanonicalBridge": { "const": true }
       }
     },
     "authority": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "storeModule", "atomicStoreRequired", "singleUseCommitCapability", "capabilityBinding", "idempotentReplay", "productionStoreRequirement", "productionStore"],
+      "required": ["module", "apiModule", "storeModule", "canonicalStoreModule", "approvalVerifierModule", "atomicStoreRequired", "singleUseCommitCapability", "capabilityBinding", "idempotentReplay", "productionStoreRequirement", "productionStore"],
       "properties": {
         "module": { "const": "./sdk/authority.js" },
+        "apiModule": { "const": "./sdk/api-authority.js" },
         "storeModule": { "const": "./sdk/redis-store.js" },
+        "canonicalStoreModule": { "const": "./sdk/canonical-store.js" },
+        "approvalVerifierModule": { "const": "./sdk/server-approval.js" },
         "atomicStoreRequired": { "const": true },
         "singleUseCommitCapability": { "const": true },
         "capabilityBinding": { "type": "array", "prefixItems": [{ "const": "txId" }, { "const": "planHash" }, { "const": "baseVersion" }, { "const": "humanPrincipal" }, { "const": "agentSession" }], "minItems": 5, "maxItems": 5 },
@@ -80,14 +89,46 @@
     "durability": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "recordModel", "atomicity", "persistentReplayRecords", "crashRecovery", "concurrency"],
+      "required": ["module", "recordModel", "atomicity", "persistentReplayRecords", "crashRecovery", "concurrency", "canonicalReplaySnapshots"],
       "properties": {
         "module": { "const": "./sdk/durable-state.js" },
         "recordModel": { "const": "single-versioned-state-plus-journal" },
         "atomicity": { "const": "compare-and-swap" },
         "persistentReplayRecords": { "const": true },
         "crashRecovery": { "const": "reload-and-validate-journal" },
-        "concurrency": { "const": "single-winner-optimistic-transition" }
+        "concurrency": { "const": "single-winner-optimistic-transition" },
+        "canonicalReplaySnapshots": { "const": true }
+      }
+    },
+    "integrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["restResourceModule", "canonicalBridgeFactory", "adapterFactory", "providerRevision", "conditionalWriteHeader", "idempotencyHeader", "lostResponseRecovery", "credentialsBoundary"],
+      "properties": {
+        "restResourceModule": { "const": "./sdk/rest-resource.js" },
+        "canonicalBridgeFactory": { "const": "createPactRestResourceBridge" },
+        "adapterFactory": { "const": "createPactJsonResourceAdapter" },
+        "providerRevision": { "const": "etag" },
+        "conditionalWriteHeader": { "const": "If-Match" },
+        "idempotencyHeader": { "const": "Idempotency-Key" },
+        "lostResponseRecovery": { "const": true },
+        "credentialsBoundary": { "const": "server-side" }
+      }
+    },
+    "agentBridges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "surfaces", "canonicalOperations", "webmcpHost", "webmcpExecuteCallback", "webmcpRegistrationAbortSignal", "webmcpExecutionAbortSignal", "webmcpUntrustedContentDefault", "mcpTransportOwnedByHost"],
+      "properties": {
+        "module": { "const": "./sdk/agent-bridge.js" },
+        "surfaces": { "type": "array", "prefixItems": [{"const":"http"},{"const":"webmcp"},{"const":"mcp"}], "minItems": 3, "maxItems": 3 },
+        "canonicalOperations": { "type": "array", "prefixItems": [{"const":"inspect"},{"const":"preview"},{"const":"approve"},{"const":"commit"},{"const":"verify"},{"const":"receipt"}], "minItems": 6, "maxItems": 6 },
+        "webmcpHost": { "const": "document.modelContext" },
+        "webmcpExecuteCallback": { "const": "single-input" },
+        "webmcpRegistrationAbortSignal": { "const": true },
+        "webmcpExecutionAbortSignal": { "const": false },
+        "webmcpUntrustedContentDefault": { "const": true },
+        "mcpTransportOwnedByHost": { "const": true }
       }
     },
     "provenance": {

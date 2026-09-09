@@ -1,4 +1,18 @@
-const ACTIONS = new Set(['preview', 'approve', 'commit', 'verify', 'receipt', 'inspect']);
+const ACTIONS = new Set([
+  'preview', 'approve', 'commit', 'verify', 'receipt', 'inspect',
+  'saga_preview', 'saga_approve', 'saga_execute', 'saga_inspect', 'saga_reconcile', 'saga_receipt',
+  'saga_recovery_inspect', 'saga_recovery_resolve'
+]);
+const SERVICE_METHODS = Object.freeze({
+  saga_preview: 'sagaPreview',
+  saga_approve: 'sagaApprove',
+  saga_execute: 'sagaExecute',
+  saga_inspect: 'sagaInspect',
+  saga_reconcile: 'sagaReconcile',
+  saga_receipt: 'sagaReceipt',
+  saga_recovery_inspect: 'sagaRecoveryInspect',
+  saga_recovery_resolve: 'sagaRecoveryResolve'
+});
 
 function writeJson(res, statusCode, body) {
   if (typeof res.status === 'function' && typeof res.json === 'function') {
@@ -20,11 +34,13 @@ function normalizeContentType(value) {
 }
 
 function protocolStatus(code) {
-  if (code === 'PACT_API_TRANSACTION_NOT_FOUND') return 404;
-  if (code.includes('STALE_') || code.includes('CONFLICT') || code.includes('ALREADY_CONSUMED') || code.includes('CONTENTION')) return 409;
+  if (code === 'PACT_API_TRANSACTION_NOT_FOUND' || code === 'PACT_SAGA_PROTOCOL_NOT_FOUND' || code === 'PACT_SAGA_NOT_FOUND') return 404;
+  if (code === 'PACT_REST_COMMIT_UNCERTAIN') return 503;
+  if (code === 'PACT_REST_PROVIDER_READ_FAILED' || code.startsWith('PACT_REST_PROVIDER_HTTP_') || code === 'PACT_REST_PROVIDER_POSTCONDITION_FAILED' || code === 'PACT_REST_INVALID_PROVIDER_RESPONSE' || code === 'PACT_REST_ETAG_REQUIRED' || code === 'PACT_REST_ETAG_REUSED_FOR_DIFFERENT_STATE') return 502;
+  if (code.includes('STALE_') || code.includes('STALE') || code.includes('CONFLICT') || code.includes('ALREADY_CONSUMED') || code.includes('CONTENTION') || code.includes('CONCURRENT_MODIFICATION')) return 409;
   if (code.includes('EXPIRED')) return 410;
-  if (code.includes('NOT_APPROVED') || code.includes('NOT_PREVIEWED') || code.includes('NOT_COMMITTED') || code.includes('RECEIPT_NOT_AVAILABLE')) return 409;
-  if (code.includes('APPROVAL_REJECTED') || code.includes('CAPABILITY_') || code.includes('BINDING_MISMATCH')) return 403;
+  if (code.includes('NOT_APPROVED') || code.includes('NOT_PREVIEWED') || code.includes('NOT_COMMITTED') || code.includes('NOT_EXECUTABLE') || code.includes('RECEIPT_NOT_AVAILABLE') || code.includes('RECONCILIATION_NOT_REQUIRED') || code.includes('RECOVERY_NOT_REQUIRED') || code.includes('STATE_CHANGED')) return 409;
+  if (code.includes('APPROVAL_REJECTED') || code.includes('CAPABILITY_') || code.includes('BINDING_MISMATCH') || code.includes('INVALID_PRINCIPAL') || code.includes('INVALID_AGENT_SESSION')) return 403;
   return 400;
 }
 
@@ -60,7 +76,7 @@ function parseEnvelope(body) {
 }
 
 function bindIdempotency(req, action, payload) {
-  if (action !== 'commit') return payload;
+  if (action !== 'commit' && action !== 'saga_execute' && action !== 'saga_reconcile' && action !== 'saga_recovery_resolve') return payload;
   const raw = requestHeader(req, 'idempotency-key');
   if (raw == null || String(raw).trim() === '') return payload;
   const headerKey = String(raw).trim();
@@ -93,10 +109,12 @@ export function createPactHttpHandler({ service, releaseSha = '' } = {}) {
     if (!body) return writeJson(res, 400, { error: { code: 'PACT_HTTP_INVALID_BODY' } });
 
     let action;
+    let method;
     let payload;
     try {
       ({ action, payload } = parseEnvelope(body));
-      if (!ACTIONS.has(action) || typeof service[action] !== 'function') throw new Error('PACT_HTTP_UNKNOWN_ACTION');
+      method = SERVICE_METHODS[action] ?? action;
+      if (!ACTIONS.has(action) || typeof service[method] !== 'function') throw new Error('PACT_HTTP_UNKNOWN_ACTION');
       payload = bindIdempotency(req, action, payload);
     } catch (error) {
       const code = typeof error?.message === 'string' && /^PACT_HTTP_/.test(error.message)
@@ -107,11 +125,11 @@ export function createPactHttpHandler({ service, releaseSha = '' } = {}) {
     }
 
     try {
-      const result = await service[action](payload);
+      const result = await service[method](payload);
       return writeJson(res, 200, result);
     } catch (error) {
       const code = typeof error?.message === 'string' ? error.message : '';
-      if (/^PACT_(?:API|AUTHORITY|DURABLE)_/.test(code)) {
+      if (/^PACT_(?:API|AUTHORITY|DURABLE|REST|SAGA)_/.test(code)) {
         return writeJson(res, protocolStatus(code), { error: { code } });
       }
       return writeJson(res, 500, { error: { code: 'PACT_HTTP_INTERNAL_ERROR' } });

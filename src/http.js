@@ -1,5 +1,9 @@
-const CONSEQUENTIAL_OPERATIONS = new Set(['commit']);
-const CANONICAL_OPERATIONS = new Set(['inspect', 'preview', 'approve', 'commit', 'verify', 'receipt']);
+const CONSEQUENTIAL_OPERATIONS = new Set(['commit', 'saga_execute', 'saga_reconcile', 'saga_recovery_resolve']);
+const CANONICAL_OPERATIONS = new Set([
+  'inspect', 'preview', 'approve', 'commit', 'verify', 'receipt',
+  'saga_preview', 'saga_approve', 'saga_execute', 'saga_inspect', 'saga_reconcile', 'saga_receipt',
+  'saga_recovery_inspect', 'saga_recovery_resolve'
+]);
 
 function assertBaseUrl(value) {
   const url = new URL(value);
@@ -102,6 +106,14 @@ export function createPactHttpConnector({ baseUrl, fetchImpl = globalThis.fetch,
     approve: (payload, options) => request('approve', payload, options),
     commit: (payload, idempotencyKey, options = {}) => request('commit', payload, { ...options, idempotencyKey }),
     verify: (payload, options) => request('verify', payload, options),
-    receipt: (payload, options) => request('receipt', payload, options)
+    receipt: (payload, options) => request('receipt', payload, options),
+    sagaPreview: (payload, options) => request('saga_preview', payload, options),
+    sagaApprove: (payload, options) => request('saga_approve', payload, options),
+    sagaExecute: (payload, idempotencyKey, options = {}) => request('saga_execute', payload, { ...options, idempotencyKey }),
+    sagaInspect: (payload, options) => request('saga_inspect', payload, options),
+    sagaReconcile: (payload, idempotencyKey, options = {}) => request('saga_reconcile', payload, { ...options, idempotencyKey }),
+    sagaRecoveryInspect: (payload, options) => request('saga_recovery_inspect', payload, options),
+    sagaRecoveryResolve: (payload, idempotencyKey, options = {}) => request('saga_recovery_resolve', payload, { ...options, idempotencyKey }),
+    sagaReceipt: (payload, options) => request('saga_receipt', payload, options)
   };
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { MemoryAuthorityStore } from '../src/authority.js';
 import { canonicalStringify } from '../src/engine.js';
+import { createPactRestResourceBridge, createPactJsonResourceAdapter } from '../src/rest-resource.js';
 import { createPactServerRuntime, createPactServerRuntimeFromEnv } from '../src/server-runtime.js';
 
 function signApproval({ secret, transaction, now, humanPrincipal = 'human:test', agentSession = 'agent:test' }) {
@@ -74,6 +75,98 @@ test('server runtime composes generic adapter, durable authority, canonical stat
   });
 });
 
+test('server runtime can transact multiple fields atomically against a real REST provider through one approval and one provider write', async () => {
+  const store = new MemoryAuthorityStore();
+  const secret = 'r'.repeat(32);
+  const nowValue = 1_800_000_100_000;
+  let etag = '"provider-r1"';
+  let resource = {
+    account: { owner: 'Ada', status: 'active' },
+    access: { role: 'admin', enabled: true },
+    plan: 'pro'
+  };
+  let writes = 0;
+  const requests = [];
+  const fetchImpl = async (_url, options = {}) => {
+    const method = options.method ?? 'GET';
+    requests.push({ method, headers: { ...(options.headers ?? {}) } });
+    if (method === 'GET') {
+      return {
+        ok: true, status: 200,
+        headers: { get(name) { return String(name).toLowerCase() === 'etag' ? etag : null; } },
+        async text() { return JSON.stringify(resource); }
+      };
+    }
+    writes += 1;
+    assert.equal(options.headers['if-match'], etag);
+    assert.match(options.headers['idempotency-key'], /^pact_auth_/);
+    resource = JSON.parse(options.body);
+    etag = '"provider-r2"';
+    return {
+      ok: true, status: 200,
+      headers: { get(name) { return String(name).toLowerCase() === 'etag' ? etag : null; } },
+      async text() { return JSON.stringify(resource); }
+    };
+  };
+  const canonical = createPactRestResourceBridge({
+    store,
+    key: 'provider:account-42',
+    baseUrl: 'https://provider.example',
+    resourcePath: '/v1/accounts/42',
+    fetchImpl
+  });
+  const adapter = createPactJsonResourceAdapter({ id: 'provider.account', version: '1.0.0' });
+  const runtime = createPactServerRuntime({
+    store,
+    approvalSecret: secret,
+    releaseSha: 'c'.repeat(40),
+    adapter,
+    canonical,
+    now: () => nowValue
+  });
+
+  const intent = {
+    operations: [
+      { path: ['account', 'owner'], value: 'Maya' },
+      { path: ['account', 'status'], value: 'suspended' },
+      { path: ['access', 'role'], value: 'read' },
+      { path: ['access', 'enabled'], value: false }
+    ]
+  };
+  const preview = await runtime.service.preview({
+    adapter: { id: 'provider.account', version: '1.0.0' },
+    intent
+  });
+  assert.equal(preview.transaction.baseVersion, 0);
+  assert.deepEqual(preview.transaction.effects, [
+    { path: 'resource.account.owner', before: 'Ada', after: 'Maya' },
+    { path: 'resource.account.status', before: 'active', after: 'suspended' },
+    { path: 'resource.access.role', before: 'admin', after: 'read' },
+    { path: 'resource.access.enabled', before: true, after: false }
+  ]);
+  assert.equal(preview.transaction.metadata.operationCount, 4);
+
+  const approval = signApproval({ secret, transaction: preview.transaction, now: nowValue });
+  const approved = await runtime.service.approve({ transactionId: preview.transaction.id, approval });
+  await runtime.service.commit({
+    transactionId: preview.transaction.id,
+    capabilityToken: approved.capability.token,
+    idempotencyKey: 'real-provider-commit-1'
+  });
+  const verified = await runtime.service.verify({ transactionId: preview.transaction.id });
+
+  assert.equal(writes, 1);
+  assert.deepEqual(resource, {
+    account: { owner: 'Maya', status: 'suspended' },
+    access: { role: 'read', enabled: false },
+    plan: 'pro'
+  });
+  assert.equal(verified.receipt.verifiedVersion, 1);
+  assert.equal(verified.receipt.effects.length, 4);
+  assert.deepEqual(await runtime.canonical.read(), { version: 1, resource });
+  assert.equal(requests.some(request => request.method === 'PUT'), true);
+});
+
 test('server runtime rejects malformed generic intents before creating a transaction', async () => {
   const runtime = createPactServerRuntime({
     store: new MemoryAuthorityStore(),
@@ -84,6 +177,28 @@ test('server runtime rejects malformed generic intents before creating a transac
     adapter: { id: 'pact.generic', version: '1.0.0' },
     intent: {}
   }), /PACT_GENERIC_VALUE_REQUIRED/);
+});
+
+test('official server runtime can select a fail-closed real REST JSON provider mode from server-only environment', () => {
+  const env = {
+    UPSTASH_REDIS_REST_URL: 'https://redis.example',
+    UPSTASH_REDIS_REST_TOKEN: 'redis-token',
+    PACT_APPROVAL_SECRET: 's'.repeat(32),
+    PACT_SOURCE_COMMIT: 'd'.repeat(40),
+    PACT_RUNTIME_MODE: 'rest-json',
+    PACT_REST_BASE_URL: 'https://provider.example',
+    PACT_REST_RESOURCE_PATH: '/v1/accounts/42',
+    PACT_REST_RESOURCE_KEY: 'provider:account-42',
+    PACT_REST_ADAPTER_ID: 'provider.account',
+    PACT_REST_BEARER_TOKEN: 'provider-secret'
+  };
+  const runtime = createPactServerRuntimeFromEnv({ env, fetchImpl: async () => { throw new Error('not called during composition'); } });
+  assert.equal(runtime.adapter.id, 'provider.account');
+  assert.equal(runtime.canonical.url, 'https://provider.example/v1/accounts/42');
+  assert.equal(runtime.releaseSha, 'd'.repeat(40));
+
+  assert.throws(() => createPactServerRuntimeFromEnv({ env: { ...env, PACT_RUNTIME_MODE: 'unknown-mode' } }), /PACT_RUNTIME_MODE_UNSUPPORTED/);
+  assert.throws(() => createPactServerRuntimeFromEnv({ env: { ...env, PACT_REST_BASE_URL: '' } }), /PACT_RUNTIME_REST_BASE_URL_REQUIRED/);
 });
 
 test('server runtime from environment fails closed unless durable storage, approval secret, and exact release SHA exist', () => {
