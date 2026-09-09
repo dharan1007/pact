@@ -9,6 +9,8 @@ const TERMINAL = new Set(['COMMITTED', 'COMPENSATED', 'PARTIALLY_COMMITTED']);
 const ADAPTER = Object.freeze({ id: 'pact.saga', version: '1.0.0' });
 const RECOVERY_ADAPTER = Object.freeze({ id: 'pact.saga.recovery', version: '1.0.0' });
 const BOOLEAN_REQUIREMENTS = Object.freeze(['conditionalWrite', 'idempotency', 'reconciliation', 'compensation', 'reversible', 'remoteFencing']);
+const CONDITIONAL_WRITE_STRENGTHS = new Set(['any', 'strong-validator', 'provider-verified']);
+const REMOTE_FENCING_STRENGTHS = new Set(['declared', 'provider-verified']);
 const MAX_RECOVERY_DECISIONS = 256;
 
 function isPlainObject(value) {
@@ -50,7 +52,7 @@ function validateRecoveryClaims(value) {
 function normalizeRequirements(value) {
   if (value == null) return {};
   if (!isPlainObject(value)) fail('PACT_SAGA_PROTOCOL_INVALID_REQUIREMENTS');
-  const allowed = new Set([...BOOLEAN_REQUIREMENTS, 'mutation']);
+  const allowed = new Set([...BOOLEAN_REQUIREMENTS, 'mutation', 'conditionalWriteStrength', 'remoteFencingStrength']);
   for (const key of Object.keys(value)) if (!allowed.has(key)) fail(`PACT_SAGA_PROTOCOL_UNKNOWN_REQUIREMENT:${key}`);
   const out = {};
   for (const key of BOOLEAN_REQUIREMENTS) {
@@ -59,13 +61,34 @@ function normalizeRequirements(value) {
     out[key] = true;
   }
   if (value.mutation != null) out.mutation = nonEmpty(value.mutation, 'PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:mutation', 64).toUpperCase();
+  if (value.conditionalWriteStrength != null) {
+    const strength = nonEmpty(value.conditionalWriteStrength, 'PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:conditionalWriteStrength', 64).toLowerCase();
+    if (!CONDITIONAL_WRITE_STRENGTHS.has(strength)) fail('PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:conditionalWriteStrength');
+    out.conditionalWriteStrength = strength;
+    out.conditionalWrite = true;
+  }
+  if (value.remoteFencingStrength != null) {
+    const strength = nonEmpty(value.remoteFencingStrength, 'PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:remoteFencingStrength', 64).toLowerCase();
+    if (!REMOTE_FENCING_STRENGTHS.has(strength)) fail('PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:remoteFencingStrength');
+    out.remoteFencingStrength = strength;
+    out.remoteFencing = true;
+  }
   return out;
 }
 
-function negotiateHandler({ handlerName, resourceKey, atomicDomain, requirements, handlers }) {
+async function handlerCapabilities(handler) {
+  if (typeof handler?.getCapabilities === 'function') {
+    const resolved = await handler.getCapabilities();
+    if (!isPlainObject(resolved)) fail('PACT_SAGA_PROTOCOL_INVALID_HANDLER_CAPABILITIES');
+    return resolved;
+  }
+  return isPlainObject(handler?.capabilities) ? handler.capabilities : {};
+}
+
+async function negotiateHandler({ handlerName, resourceKey, atomicDomain, requirements, handlers }) {
   const handler = handlers[handlerName];
   if (!isPlainObject(handler)) fail(`PACT_SAGA_PROTOCOL_HANDLER_NOT_REGISTERED:${handlerName}`);
-  const capabilities = isPlainObject(handler.capabilities) ? handler.capabilities : {};
+  const capabilities = await handlerCapabilities(handler);
   if (capabilities.atomicDomain != null && capabilities.atomicDomain !== atomicDomain) fail('PACT_SAGA_PROTOCOL_ATOMIC_DOMAIN_MISMATCH');
   if (capabilities.resourceKey != null && capabilities.resourceKey !== resourceKey) fail('PACT_SAGA_PROTOCOL_RESOURCE_MISMATCH');
   for (const key of BOOLEAN_REQUIREMENTS) {
@@ -87,14 +110,33 @@ function negotiateHandler({ handlerName, resourceKey, atomicDomain, requirements
   if (requirements.mutation != null && String(capabilities.mutation ?? '').toUpperCase() !== requirements.mutation) {
     fail('PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:mutation');
   }
+  if (requirements.conditionalWriteStrength != null) {
+    const strength = requirements.conditionalWriteStrength;
+    if (strength === 'strong-validator' && capabilities.conditionalWrite !== 'strong-validator') {
+      fail('PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:conditionalWriteStrength');
+    }
+    if (strength === 'provider-verified' && capabilities.qualification?.conditionalWrite !== 'provider-verified') {
+      fail('PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:conditionalWriteStrength');
+    }
+  }
+  if (requirements.remoteFencingStrength != null) {
+    const strength = requirements.remoteFencingStrength;
+    if (strength === 'declared' && (typeof capabilities.remoteFencing !== 'string' || !capabilities.remoteFencing)) {
+      fail('PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:remoteFencingStrength');
+    }
+    if (strength === 'provider-verified' && capabilities.qualification?.remoteFencing !== 'provider-verified') {
+      fail('PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:remoteFencingStrength');
+    }
+  }
 }
 
-function normalizePreviewSteps(steps, handlers) {
+async function normalizePreviewSteps(steps, handlers) {
   if (!Array.isArray(steps) || steps.length < 1) fail('PACT_SAGA_PROTOCOL_STEPS_REQUIRED');
   if (steps.length > 64) fail('PACT_SAGA_PROTOCOL_TOO_MANY_STEPS');
   const ids = new Set();
   const resources = new Set();
-  return steps.map(raw => {
+  const normalized = [];
+  for (const raw of steps) {
     if (!isPlainObject(raw)) fail('PACT_SAGA_PROTOCOL_INVALID_STEP');
     const id = nonEmpty(raw.id, 'PACT_SAGA_PROTOCOL_STEP_ID_REQUIRED');
     const handler = nonEmpty(raw.handler, 'PACT_SAGA_PROTOCOL_HANDLER_REQUIRED');
@@ -105,16 +147,17 @@ function normalizePreviewSteps(steps, handlers) {
     ids.add(id);
     resources.add(resourceKey);
     const requirements = normalizeRequirements(raw.requirements);
-    negotiateHandler({ handlerName: handler, resourceKey, atomicDomain, requirements, handlers });
-    return {
+    await negotiateHandler({ handlerName: handler, resourceKey, atomicDomain, requirements, handlers });
+    normalized.push({
       id,
       handler,
       resourceKey,
       atomicDomain,
       requirements,
       input: assertJson(raw.input, 'PACT_SAGA_PROTOCOL_INPUT_MUST_BE_JSON')
-    };
-  });
+    });
+  }
+  return normalized;
 }
 
 function validateProtocolRecord(value) {
@@ -194,7 +237,7 @@ export function createPactSagaAuthorityService({
   }
 
   async function sagaPreview({ steps } = {}) {
-    const normalizedSteps = normalizePreviewSteps(steps, handlers);
+    const normalizedSteps = await normalizePreviewSteps(steps, handlers);
     const id = `saga_${globalThis.crypto.randomUUID()}`;
     const planHash = await sha256Hex({ sagaId: id, adapter: ADAPTER, baseVersion: 0, steps: normalizedSteps });
     const record = {
