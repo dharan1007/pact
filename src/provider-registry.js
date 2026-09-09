@@ -1,5 +1,6 @@
 import { canonicalStringify, sha256Hex } from './engine.js';
 import { createPactRestResourceBridge, createPactJsonResourceAdapter } from './rest-resource.js';
+import { createPactProviderQualifier } from './provider-qualification.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
@@ -172,7 +173,42 @@ function markUncertain(error) {
   return error;
 }
 
-function publicProvider(provider) {
+function localQualification(provider) {
+  return Object.freeze({
+    conditionalWrite: provider.capabilities.conditionalWrite === 'strong-validator' ? 'locally-enforced' : 'declared',
+    ...(provider.remoteFencing ? { remoteFencing: 'declared' } : {})
+  });
+}
+
+function localCapabilities(provider) {
+  return Object.freeze({ ...provider.capabilities, qualification: localQualification(provider) });
+}
+
+function assertQualificationBinding(evidence, provider) {
+  if (evidence == null) return;
+  if (evidence.providerId !== provider.id || evidence.resourceKey !== provider.resourceKey || evidence.atomicDomain !== provider.atomicDomain) {
+    fail('PACT_PROVIDER_REGISTRY_QUALIFICATION_BINDING_MISMATCH');
+  }
+}
+
+async function resolvedCapabilities(provider, qualifier) {
+  const qualification = { ...localQualification(provider) };
+  const conditional = await qualifier.inspectQualification(provider.id, 'conditional-write');
+  if (conditional) {
+    assertQualificationBinding(conditional, provider);
+    qualification.conditionalWrite = 'provider-verified';
+  }
+  if (provider.remoteFencing) {
+    const fencing = await qualifier.inspectQualification(provider.id, 'remote-fencing');
+    if (fencing) {
+      assertQualificationBinding(fencing, provider);
+      qualification.remoteFencing = 'provider-verified';
+    }
+  }
+  return Object.freeze({ ...provider.capabilities, qualification: Object.freeze(qualification) });
+}
+
+function publicProvider(provider, capabilities = localCapabilities(provider)) {
   return Object.freeze({
     id: provider.id,
     type: provider.type,
@@ -180,11 +216,11 @@ function publicProvider(provider) {
     atomicDomain: provider.atomicDomain,
     url: new URL(provider.resourcePath, `${provider.baseUrl.replace(/\/$/, '')}/`).toString(),
     secretConfigured: provider.secretConfigured,
-    capabilities: provider.capabilities
+    capabilities
   });
 }
 
-function createRestSagaHandler({ store, provider, fetchImpl }) {
+function createRestSagaHandler({ store, provider, fetchImpl, qualifier }) {
   const baseHeaders = provider.bearerToken ? { authorization: `Bearer ${provider.bearerToken}` } : {};
   const qualifiedFetchImpl = provider.capabilities.conditionalWrite === 'strong-validator'
     ? async (url, options = {}) => {
@@ -310,12 +346,15 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
       intended: clone(plan.next),
       observed: clone(observed),
       classification,
-      capabilities: clone(provider.capabilities)
+      capabilities: await resolvedCapabilities(provider, qualifier)
     };
   }
 
   const handler = {
-    capabilities: provider.capabilities,
+    capabilities: localCapabilities(provider),
+    async getCapabilities() {
+      return resolvedCapabilities(provider, qualifier);
+    },
     async execute({ input, idempotencyKey, fence }) {
       const plan = await prepareForward(input, idempotencyKey);
       try {
@@ -367,11 +406,48 @@ export function createPactProviderRegistry({ store, config, env = process.env, f
   assertStore(store);
   if (typeof fetchImpl !== 'function') fail('PACT_PROVIDER_REGISTRY_FETCH_REQUIRED');
   const providers = normalizeRegistryConfig(config, env);
+  const qualifier = createPactProviderQualifier({ store });
+  const byId = new Map(providers.map(provider => [provider.id, provider]));
   const handlers = {};
-  for (const provider of providers) handlers[provider.id] = createRestSagaHandler({ store, provider, fetchImpl });
+  for (const provider of providers) handlers[provider.id] = createRestSagaHandler({ store, provider, fetchImpl, qualifier });
+
+  const providerFor = providerId => {
+    providerId = nonEmpty(providerId, 'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED', 256);
+    const provider = byId.get(providerId);
+    if (!provider) fail(`PACT_PROVIDER_REGISTRY_PROVIDER_NOT_FOUND:${providerId}`);
+    return provider;
+  };
+
+  async function inspectProviders() {
+    const out = [];
+    for (const provider of providers) out.push(publicProvider(provider, await resolvedCapabilities(provider, qualifier)));
+    return Object.freeze(out);
+  }
+
+  async function qualifyConditionalWrite(providerId, probe) {
+    const provider = providerFor(providerId);
+    return qualifier.qualifyConditionalWrite({
+      provider: { id: provider.id, resourceKey: provider.resourceKey, atomicDomain: provider.atomicDomain },
+      probe
+    });
+  }
+
+  async function qualifyRemoteFencing(providerId, generation, probe) {
+    const provider = providerFor(providerId);
+    if (!provider.remoteFencing) fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_UNSUPPORTED');
+    return qualifier.qualifyRemoteFencing({
+      provider: { id: provider.id, resourceKey: provider.resourceKey, atomicDomain: provider.atomicDomain },
+      generation,
+      probe
+    });
+  }
+
   return Object.freeze({
     handlers: Object.freeze(handlers),
-    providers: Object.freeze(providers.map(publicProvider))
+    providers: Object.freeze(providers.map(provider => publicProvider(provider))),
+    inspectProviders,
+    qualifyConditionalWrite,
+    qualifyRemoteFencing
   });
 }
 
