@@ -424,7 +424,7 @@ export function createPactSagaAuthorityService({
       }), 'PACT_SAGA_PROTOCOL_RECOVERY_EVIDENCE_MUST_BE_JSON');
     }
 
-    const recovery = {
+    const recoveryEvidence = {
       sagaId: record.id,
       state: execution.state,
       recoveryVersion: execution.version,
@@ -443,10 +443,10 @@ export function createPactSagaAuthorityService({
       failure: clone(execution.failure ?? null),
       leaseGeneration: execution.leaseGeneration ?? 0,
       providerEvidence,
-      operational: telemetry.deriveOperationalStatus(execution),
       allowedActions: ['reconcile']
     };
-    const recoveryHash = await sha256Hex({ namespace: 'pact-saga-recovery-v1', sagaId: record.id, planHash: record.planHash, recovery });
+    const recoveryHash = await sha256Hex({ namespace: 'pact-saga-recovery-v1', sagaId: record.id, planHash: record.planHash, recovery: recoveryEvidence });
+    const recovery = { ...recoveryEvidence, operational: telemetry.deriveOperationalStatus(execution) };
     return { recovery, recoveryHash };
   }
 
