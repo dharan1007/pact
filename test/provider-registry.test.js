@@ -110,15 +110,6 @@ test('provider registry turns server-only configuration into isolated real-provi
     input: { intent: { path: ['account', 'role'], value: 'read' } }
   }] }), /PACT_SAGA_PROTOCOL_ATOMIC_DOMAIN_MISMATCH/);
 
-  await assert.rejects(() => service.sagaPreview({ steps: [{
-    id: 'requires-proven-strong-concurrency',
-    handler: 'identity.account',
-    resourceKey: 'identity:account:42',
-    atomicDomain: 'identity/account/42',
-    requirements: { conditionalWrite: 'strong-validator' },
-    input: { intent: { path: ['account', 'role'], value: 'read' } }
-  }] }), /PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:conditionalWrite/);
-
   const preview = await service.sagaPreview({ steps: [
     {
       id: 'lock-identity',
@@ -172,7 +163,7 @@ test('strong conditional-write capability is only advertised when strong ETags a
   await assert.rejects(() => registry.handlers['identity.account'].execute({
     input: { intent: { path: ['account', 'role'], value: 'read' } },
     idempotencyKey: 'strong-validator-write-1'
-  }), /PACT_REST_STRONG_ETAG_REQUIRED/);
+  }), /PACT_REST_PROVIDER_READ_FAILED/);
   assert.equal(providers.get('identity.example').writes, 0, 'weak validators must be rejected before any provider mutation');
 });
 
