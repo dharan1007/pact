@@ -186,7 +186,13 @@ test('saga approval replay is bound to the exact original approval artifact', as
   let verifierCalls = 0;
   const service = createPactSagaAuthorityService({
     store: atomicStore(),
-    handlers: { provider: { async execute() { return {}; }, async verify() { return true; } } },
+    handlers: {
+      provider: {
+        async execute() { return {}; },
+        async verify() { return true; },
+        async reconcile() { return 'not_committed'; }
+      }
+    },
     now: () => 5_000,
     verifyApproval: async () => {
       verifierCalls += 1;
