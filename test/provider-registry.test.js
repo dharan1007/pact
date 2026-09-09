@@ -79,7 +79,7 @@ test('provider registry turns server-only configuration into isolated real-provi
   assert.deepEqual(Object.keys(registry.handlers).sort(), ['billing.subscription', 'identity.account']);
   assert.equal(registry.providers.length, 2);
   assert.equal(registry.providers[0].secretConfigured, true);
-  assert.equal(registry.providers[0].capabilities.conditionalWrite, 'strong-etag');
+  assert.equal(registry.providers[0].capabilities.conditionalWrite, 'conditional-write-unknown-strength');
   assert.equal(registry.providers[0].capabilities.idempotency, 'provider-key+durable-replay');
   assert.equal(registry.providers[0].capabilities.reconciliation, true);
   assert.equal(registry.providers[0].capabilities.compensation, true);
@@ -109,6 +109,15 @@ test('provider registry turns server-only configuration into isolated real-provi
     atomicDomain: 'billing/subscription/42',
     input: { intent: { path: ['account', 'role'], value: 'read' } }
   }] }), /PACT_SAGA_PROTOCOL_ATOMIC_DOMAIN_MISMATCH/);
+
+  await assert.rejects(() => service.sagaPreview({ steps: [{
+    id: 'requires-proven-strong-concurrency',
+    handler: 'identity.account',
+    resourceKey: 'identity:account:42',
+    atomicDomain: 'identity/account/42',
+    requirements: { conditionalWrite: 'strong-validator' },
+    input: { intent: { path: ['account', 'role'], value: 'read' } }
+  }] }), /PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:conditionalWrite/);
 
   const preview = await service.sagaPreview({ steps: [
     {
@@ -145,6 +154,28 @@ test('provider registry turns server-only configuration into isolated real-provi
   assert.deepEqual(providers.get('billing.example').resource, { subscription: { state: 'paused', plan: 'pro' } });
 });
 
+test('strong conditional-write capability is only advertised when strong ETags are enforced at the provider boundary', async () => {
+  const store = new MemoryAuthorityStore();
+  const { providers, fetchImpl } = providerHarness();
+  const qualified = config();
+  qualified.providers[0].capabilities.conditionalWrite = 'strong-validator';
+  const registry = createPactProviderRegistry({
+    store,
+    config: qualified,
+    env: { PACT_PROVIDER_IDENTITY_TOKEN: 'identity-secret' },
+    fetchImpl
+  });
+
+  assert.equal(registry.providers[0].capabilities.conditionalWrite, 'strong-validator');
+  providers.get('identity.example').etag = 'W/"identity-1"';
+
+  await assert.rejects(() => registry.handlers['identity.account'].execute({
+    input: { intent: { path: ['account', 'role'], value: 'read' } },
+    idempotencyKey: 'strong-validator-write-1'
+  }), /PACT_REST_STRONG_ETAG_REQUIRED/);
+  assert.equal(providers.get('identity.example').writes, 0, 'weak validators must be rejected before any provider mutation');
+});
+
 test('provider registry rejects duplicate identities, missing credential references and unsupported guarantee claims before runtime creation', () => {
   const store = new MemoryAuthorityStore();
   const { fetchImpl } = providerHarness();
@@ -157,4 +188,8 @@ test('provider registry rejects duplicate identities, missing credential referen
   const impossible = config();
   impossible.providers[0].capabilities = { compensation: true, reversible: false };
   assert.throws(() => createPactProviderRegistry({ store, config: impossible, env: { PACT_PROVIDER_IDENTITY_TOKEN: 'x' }, fetchImpl }), /PACT_PROVIDER_REGISTRY_INVALID_REVERSIBILITY/);
+
+  const unsupported = config();
+  unsupported.providers[0].capabilities.conditionalWrite = 'magic-cas';
+  assert.throws(() => createPactProviderRegistry({ store, config: unsupported, env: { PACT_PROVIDER_IDENTITY_TOKEN: 'x' }, fetchImpl }), /PACT_PROVIDER_REGISTRY_UNSUPPORTED_CONDITIONAL_WRITE/);
 });
