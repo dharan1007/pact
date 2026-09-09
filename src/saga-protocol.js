@@ -6,7 +6,9 @@ const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
 const TERMINAL = new Set(['COMMITTED', 'COMPENSATED', 'PARTIALLY_COMMITTED']);
 const ADAPTER = Object.freeze({ id: 'pact.saga', version: '1.0.0' });
+const RECOVERY_ADAPTER = Object.freeze({ id: 'pact.saga.recovery', version: '1.0.0' });
 const BOOLEAN_REQUIREMENTS = Object.freeze(['conditionalWrite', 'idempotency', 'reconciliation', 'compensation', 'reversible', 'remoteFencing']);
+const MAX_RECOVERY_DECISIONS = 256;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -34,6 +36,14 @@ function assertStore(store) {
   if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
     fail('PACT_SAGA_PROTOCOL_ATOMIC_STORE_REQUIRED');
   }
+}
+
+function validateRecoveryClaims(value) {
+  if (!isPlainObject(value)) fail('PACT_SAGA_PROTOCOL_RECOVERY_APPROVAL_REJECTED');
+  return {
+    humanPrincipal: nonEmpty(value.humanPrincipal, 'PACT_SAGA_PROTOCOL_RECOVERY_INVALID_PRINCIPAL'),
+    agentSession: nonEmpty(value.agentSession, 'PACT_SAGA_PROTOCOL_RECOVERY_INVALID_AGENT_SESSION')
+  };
 }
 
 function normalizeRequirements(value) {
@@ -111,7 +121,12 @@ function validateProtocolRecord(value) {
       typeof value.planHash !== 'string' || typeof value.state !== 'string' || !Array.isArray(value.steps)) {
     fail('PACT_SAGA_PROTOCOL_CORRUPT_RECORD');
   }
-  return clone(value);
+  const normalized = clone(value);
+  if (normalized.recoveryDecisions == null) normalized.recoveryDecisions = [];
+  if (!Array.isArray(normalized.recoveryDecisions) || normalized.recoveryDecisions.length > MAX_RECOVERY_DECISIONS) {
+    fail('PACT_SAGA_PROTOCOL_CORRUPT_RECOVERY_HISTORY');
+  }
+  return normalized;
 }
 
 function publicSaga(protocol, coordinatorRecord = null) {
@@ -128,6 +143,7 @@ function publicSaga(protocol, coordinatorRecord = null) {
     approvedAt: protocol.approvedAt ?? null,
     approvalClaims: clone(protocol.approvalClaims ?? null),
     executionAuthorizedAt: protocol.executionAuthorizedAt ?? null,
+    recoveryDecisionCount: Array.isArray(protocol.recoveryDecisions) ? protocol.recoveryDecisions.length : 0,
     failure: clone(coordinatorRecord?.failure ?? null)
   };
   if (coordinatorRecord?.updatedAt != null) out.updatedAt = coordinatorRecord.updatedAt;
@@ -197,6 +213,7 @@ export function createPactSagaAuthorityService({
       executionIdempotencyKey: null,
       executionAuthorization: null,
       executionAuthorizedAt: null,
+      recoveryDecisions: [],
       receipt: null
     };
     if (!await store.create(keyFor(id), record)) fail('PACT_SAGA_PROTOCOL_ID_COLLISION');
@@ -309,6 +326,154 @@ export function createPactSagaAuthorityService({
     return { saga: publicSaga(record, result) };
   }
 
+  async function buildRecovery(record) {
+    const execution = await coordinator.inspect({ sagaId: record.id });
+    if (execution.state !== 'RECONCILIATION_REQUIRED') fail(`PACT_SAGA_PROTOCOL_RECOVERY_NOT_REQUIRED:${execution.state}`);
+
+    let phase = 'forward';
+    let step = execution.steps.find(candidate => candidate.state === 'UNCERTAIN' || candidate.state === 'EXECUTING');
+    if (!step) {
+      phase = 'compensation';
+      step = execution.steps.find(candidate => candidate.state === 'COMPENSATION_UNCERTAIN');
+    }
+    if (!step) fail('PACT_SAGA_PROTOCOL_CORRUPT_RECOVERY_STATE');
+
+    const handler = handlers[step.handler];
+    let providerEvidence = null;
+    if (typeof handler?.recoveryEvidence === 'function') {
+      providerEvidence = assertJson(await handler.recoveryEvidence({
+        sagaId: record.id,
+        planHash: record.planHash,
+        approvalBinding: record.approvalBinding,
+        phase,
+        step: clone(step),
+        input: clone(step.input),
+        forwardResult: clone(step.result),
+        idempotencyKey: `${record.id}:${step.id}:${phase === 'compensation' ? 'compensate' : 'forward'}`,
+        failure: clone(execution.failure ?? null)
+      }), 'PACT_SAGA_PROTOCOL_RECOVERY_EVIDENCE_MUST_BE_JSON');
+    }
+
+    const recovery = {
+      sagaId: record.id,
+      state: execution.state,
+      recoveryVersion: execution.version,
+      planHash: record.planHash,
+      phase,
+      step: {
+        id: step.id,
+        handler: step.handler,
+        resourceKey: step.resourceKey,
+        atomicDomain: step.atomicDomain,
+        state: step.state,
+        attempts: step.attempts,
+        compensationAttempts: step.compensationAttempts,
+        executionFence: clone(step.executionFence ?? null)
+      },
+      failure: clone(execution.failure ?? null),
+      leaseGeneration: execution.leaseGeneration ?? 0,
+      providerEvidence,
+      allowedActions: ['reconcile']
+    };
+    const recoveryHash = await sha256Hex({ namespace: 'pact-saga-recovery-v1', sagaId: record.id, planHash: record.planHash, recovery });
+    return { recovery, recoveryHash };
+  }
+
+  async function sagaRecoveryInspect({ sagaId } = {}) {
+    const record = await load(sagaId);
+    if (!record) fail('PACT_SAGA_PROTOCOL_NOT_FOUND');
+    if (record.state !== 'APPROVED') fail('PACT_SAGA_PROTOCOL_NOT_APPROVED');
+    return buildRecovery(record);
+  }
+
+  async function sagaRecoveryResolve({ sagaId, recoveryHash, action, approval, idempotencyKey } = {}) {
+    let record = await load(sagaId);
+    if (!record) fail('PACT_SAGA_PROTOCOL_NOT_FOUND');
+    if (record.state !== 'APPROVED') fail('PACT_SAGA_PROTOCOL_NOT_APPROVED');
+    recoveryHash = nonEmpty(recoveryHash, 'PACT_SAGA_PROTOCOL_RECOVERY_HASH_REQUIRED', 64).toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(recoveryHash)) fail('PACT_SAGA_PROTOCOL_INVALID_RECOVERY_HASH');
+    action = nonEmpty(action, 'PACT_SAGA_PROTOCOL_RECOVERY_ACTION_REQUIRED', 64).toLowerCase();
+    if (action !== 'reconcile') fail('PACT_SAGA_PROTOCOL_RECOVERY_ACTION_UNSUPPORTED');
+    idempotencyKey = nonEmpty(idempotencyKey, 'PACT_SAGA_PROTOCOL_RECOVERY_IDEMPOTENCY_KEY_REQUIRED');
+    const normalizedApproval = assertJson(approval, 'PACT_SAGA_PROTOCOL_RECOVERY_APPROVAL_MUST_BE_JSON');
+    const approvalArtifactHash = await sha256Hex({ sagaId: record.id, recoveryHash, action, approval: normalizedApproval });
+    const decisionHash = await sha256Hex({ sagaId: record.id, recoveryHash, action, approvalArtifactHash });
+
+    let decision = record.recoveryDecisions.find(candidate => candidate.idempotencyKey === idempotencyKey) ?? null;
+    if (decision) {
+      if (decision.decisionHash !== decisionHash) fail('PACT_SAGA_PROTOCOL_RECOVERY_REPLAY_CONFLICT');
+      if (decision.status === 'COMPLETED') {
+        const execution = await coordinator.inspect({ sagaId: record.id });
+        return { saga: publicSaga(record, execution), recoveryDecision: clone(decision), idempotentReplay: true };
+      }
+      if (decision.status !== 'PENDING') fail('PACT_SAGA_PROTOCOL_CORRUPT_RECOVERY_DECISION');
+    } else {
+      const currentRecovery = await buildRecovery(record);
+      if (currentRecovery.recoveryHash !== recoveryHash) fail('PACT_SAGA_PROTOCOL_RECOVERY_STALE');
+      if (record.recoveryDecisions.length >= MAX_RECOVERY_DECISIONS) fail('PACT_SAGA_PROTOCOL_RECOVERY_HISTORY_FULL');
+
+      const verified = await verifyApproval({
+        approval: clone(normalizedApproval),
+        txId: `${record.id}:recovery`,
+        planHash: recoveryHash,
+        baseVersion: currentRecovery.recovery.recoveryVersion,
+        adapter: clone(RECOVERY_ADAPTER)
+      });
+      const claims = validateRecoveryClaims(verified);
+      decision = {
+        idempotencyKey,
+        recoveryHash,
+        action,
+        approvalArtifactHash,
+        decisionHash,
+        claims,
+        status: 'PENDING',
+        createdAt: now(),
+        completedAt: null,
+        resultState: null,
+        resultHash: null,
+        resolutionReceiptHash: null
+      };
+      record = await persist(record, next => { next.recoveryDecisions.push(clone(decision)); });
+    }
+
+    let execution = await coordinator.inspect({ sagaId: record.id });
+    if (!TERMINAL.has(execution.state)) {
+      if (execution.state !== 'RECONCILIATION_REQUIRED') fail(`PACT_SAGA_PROTOCOL_RECOVERY_STATE_CHANGED:${execution.state}`);
+      execution = await coordinator.reconcile({ sagaId: record.id });
+    }
+
+    const resultHash = await sha256Hex({
+      sagaId: record.id,
+      planHash: record.planHash,
+      state: execution.state,
+      steps: execution.steps,
+      failure: execution.failure ?? null
+    });
+    const completedAt = now();
+    const resolutionReceiptHash = await sha256Hex({
+      namespace: 'pact-saga-recovery-resolution-v1',
+      decisionHash,
+      resultHash,
+      resultState: execution.state,
+      completedAt
+    });
+    record = await persist(record, next => {
+      const index = next.recoveryDecisions.findIndex(candidate => candidate.idempotencyKey === idempotencyKey);
+      if (index < 0) fail('PACT_SAGA_PROTOCOL_CORRUPT_RECOVERY_DECISION');
+      next.recoveryDecisions[index] = {
+        ...next.recoveryDecisions[index],
+        status: 'COMPLETED',
+        completedAt,
+        resultState: execution.state,
+        resultHash,
+        resolutionReceiptHash
+      };
+    });
+    decision = record.recoveryDecisions.find(candidate => candidate.idempotencyKey === idempotencyKey);
+    return { saga: publicSaga(record, execution), recoveryDecision: clone(decision), idempotentReplay: false };
+  }
+
   async function sagaReceipt({ sagaId } = {}) {
     let record = await load(sagaId);
     if (!record) fail('PACT_SAGA_PROTOCOL_NOT_FOUND');
@@ -323,6 +488,7 @@ export function createPactSagaAuthorityService({
       approvalBinding: record.approvalBinding,
       approvalClaims: clone(record.approvalClaims),
       executionAuthorizationId: record.executionAuthorization?.authorizationId ?? null,
+      recoveryDecisions: clone(record.recoveryDecisions),
       steps: clone(execution.steps),
       failure: clone(execution.failure ?? null),
       completedAt: execution.committedAt ?? execution.updatedAt,
@@ -333,5 +499,14 @@ export function createPactSagaAuthorityService({
     return { receipt: clone(record.receipt), idempotentReplay: false };
   }
 
-  return Object.freeze({ sagaPreview, sagaApprove, sagaExecute, sagaInspect, sagaReconcile, sagaReceipt });
+  return Object.freeze({
+    sagaPreview,
+    sagaApprove,
+    sagaExecute,
+    sagaInspect,
+    sagaReconcile,
+    sagaRecoveryInspect,
+    sagaRecoveryResolve,
+    sagaReceipt
+  });
 }
