@@ -3,6 +3,8 @@ import { canonicalStringify, sha256Hex } from './engine.js';
 const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
 const MAX_STEPS = 64;
+const DEFAULT_LEASE_MS = 30_000;
+const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
 const TERMINAL = new Set(['COMMITTED', 'COMPENSATED', 'PARTIALLY_COMMITTED']);
 
 function isPlainObject(value) {
@@ -35,6 +37,18 @@ function assertStore(store) {
   if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
     fail('PACT_SAGA_ATOMIC_STORE_REQUIRED');
   }
+}
+
+function normalizeLeaseMs(value) {
+  if (value == null) return DEFAULT_LEASE_MS;
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_LEASE_MS) fail('PACT_SAGA_INVALID_LEASE_MS');
+  return value;
+}
+
+function defaultWorkerId() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return `worker-${uuid}`;
+  return `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function normalizeHandlers(handlers) {
@@ -89,7 +103,16 @@ function validateRecord(value) {
       typeof value.planHash !== 'string' || typeof value.approvalBinding !== 'string' || typeof value.definitionHash !== 'string' ||
       typeof value.state !== 'string' || !Array.isArray(value.steps)) fail('PACT_SAGA_CORRUPT_RECORD');
   if (value.steps.length < 1 || value.steps.length > MAX_STEPS) fail('PACT_SAGA_CORRUPT_RECORD');
-  return clone(value);
+  const normalized = clone(value);
+  if (normalized.leaseGeneration == null) normalized.leaseGeneration = 0;
+  if (!Number.isSafeInteger(normalized.leaseGeneration) || normalized.leaseGeneration < 0) fail('PACT_SAGA_CORRUPT_RECORD');
+  if (normalized.lease == null) normalized.lease = null;
+  if (normalized.lease != null) {
+    if (!isPlainObject(normalized.lease) || typeof normalized.lease.ownerId !== 'string' || !normalized.lease.ownerId ||
+        !Number.isSafeInteger(normalized.lease.generation) || normalized.lease.generation < 1 ||
+        !Number.isFinite(normalized.lease.expiresAt)) fail('PACT_SAGA_CORRUPT_RECORD');
+  }
+  return normalized;
 }
 
 function publicRecord(record) {
@@ -110,10 +133,23 @@ function outcome(value, code) {
   return value;
 }
 
-export function createPactSagaCoordinator({ store, handlers, now = () => Date.now(), prefix = 'pact:saga:' } = {}) {
+function isFenceLost(error) {
+  return error?.message === 'PACT_SAGA_EXECUTION_FENCE_LOST' || error?.message === 'PACT_SAGA_EXECUTION_LEASE_HELD';
+}
+
+export function createPactSagaCoordinator({
+  store,
+  handlers,
+  now = () => Date.now(),
+  prefix = 'pact:saga:',
+  workerId = defaultWorkerId(),
+  leaseMs = DEFAULT_LEASE_MS
+} = {}) {
   assertStore(store);
   const registry = normalizeHandlers(handlers);
   prefix = nonEmpty(prefix, 'PACT_SAGA_PREFIX_REQUIRED', 512);
+  workerId = nonEmpty(workerId, 'PACT_SAGA_WORKER_ID_REQUIRED', 256);
+  leaseMs = normalizeLeaseMs(leaseMs);
 
   const keyFor = sagaId => `${prefix}${sagaId}`;
 
@@ -132,6 +168,47 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
     return validateRecord(next);
   }
 
+  function fenceOf(record) {
+    if (!record.lease) fail('PACT_SAGA_EXECUTION_FENCE_LOST');
+    return clone(record.lease);
+  }
+
+  function leaseMatches(record, fence, at = now()) {
+    return Boolean(record.lease) && record.lease.ownerId === fence.ownerId && record.lease.generation === fence.generation &&
+      record.lease.expiresAt > at;
+  }
+
+  async function requireFence(sagaId, fence) {
+    const latest = await load(sagaId);
+    if (!latest || !leaseMatches(latest, fence)) fail('PACT_SAGA_EXECUTION_FENCE_LOST');
+    return latest;
+  }
+
+  async function persistFenced(current, fence, mutate) {
+    const latest = await requireFence(current.sagaId, fence);
+    return persist(latest, mutate);
+  }
+
+  async function acquireLease(record) {
+    const at = now();
+    const existing = record.lease;
+    if (existing && existing.expiresAt > at && existing.ownerId !== workerId) fail('PACT_SAGA_EXECUTION_LEASE_HELD');
+    const sameLiveOwner = existing && existing.expiresAt > at && existing.ownerId === workerId;
+    const generation = sameLiveOwner ? existing.generation : record.leaseGeneration + 1;
+    return persist(record, next => {
+      next.leaseGeneration = Math.max(next.leaseGeneration ?? 0, generation);
+      next.lease = { ownerId: workerId, generation, expiresAt: at + leaseMs };
+    });
+  }
+
+  async function renewLease(record, fence) {
+    const latest = await requireFence(record.sagaId, fence);
+    const at = now();
+    return persist(latest, next => {
+      next.lease = { ownerId: fence.ownerId, generation: fence.generation, expiresAt: at + leaseMs };
+    });
+  }
+
   async function create({ sagaId, planHash, approvalBinding, steps } = {}) {
     sagaId = nonEmpty(sagaId, 'PACT_SAGA_ID_REQUIRED');
     planHash = nonEmpty(planHash, 'PACT_SAGA_PLAN_HASH_REQUIRED', 512);
@@ -148,7 +225,9 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
       steps: normalizedSteps,
       createdAt: now(),
       updatedAt: now(),
-      failure: null
+      failure: null,
+      leaseGeneration: 0,
+      lease: null
     };
     if (await store.create(keyFor(sagaId), record)) return publicRecord(record);
     const existing = await load(sagaId);
@@ -156,8 +235,8 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
     return publicRecord(existing);
   }
 
-  async function compensate(record, failure) {
-    let current = await persist(record, next => {
+  async function compensate(record, failure, fence) {
+    let current = await persistFenced(record, fence, next => {
       next.state = 'COMPENSATING';
       next.failure = clone(failure);
     });
@@ -173,7 +252,9 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
         continue;
       }
 
-      current = await persist(current, next => {
+      current = await renewLease(current, fence);
+      fence = fenceOf(current);
+      current = await persistFenced(current, fence, next => {
         const step = next.steps[index];
         step.state = 'COMPENSATING';
         step.compensationAttempts += 1;
@@ -187,38 +268,43 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
         step: clone(stepRecord),
         input: clone(stepRecord.input),
         forwardResult: clone(stepRecord.result),
-        idempotencyKey: `${current.sagaId}:${stepRecord.id}:compensate`
+        idempotencyKey: `${current.sagaId}:${stepRecord.id}:compensate`,
+        fence: clone(fence)
       };
 
       try {
         const result = await handler.compensate(context);
+        current = await requireFence(current.sagaId, fence);
         const verified = typeof handler.verifyCompensation === 'function' ? await handler.verifyCompensation({ ...context, result: clone(result) }) : true;
+        current = await requireFence(current.sagaId, fence);
         if (!verified) throw new Error('PACT_SAGA_COMPENSATION_VERIFICATION_FAILED');
-        current = await persist(current, next => {
+        current = await persistFenced(current, fence, next => {
           const step = next.steps[index];
           step.state = 'COMPENSATED';
           step.compensationResult = clone(result);
           step.compensatedAt = now();
         });
       } catch (error) {
+        if (isFenceLost(error)) throw error;
         const info = errorInfo(error);
         if (info.uncertain) {
-          return publicRecord(await persist(current, next => {
+          return publicRecord(await persistFenced(current, fence, next => {
             next.state = 'RECONCILIATION_REQUIRED';
             next.failure = { ...info, phase: 'compensation', stepId: stepRecord.id };
             next.steps[index].state = 'COMPENSATION_UNCERTAIN';
           }));
         }
         incomplete = true;
-        current = await persist(current, next => {
+        current = await persistFenced(current, fence, next => {
           next.steps[index].state = 'COMPENSATION_FAILED';
           next.steps[index].compensationFailure = info;
         });
       }
     }
 
-    current = await persist(current, next => {
+    current = await persistFenced(current, fence, next => {
       next.state = incomplete ? 'PARTIALLY_COMMITTED' : 'COMPENSATED';
+      next.lease = null;
     });
     return publicRecord(current);
   }
@@ -230,12 +316,15 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
     if (current.state === 'RECONCILIATION_REQUIRED') return publicRecord(current);
     if (!['PLANNED', 'EXECUTING'].includes(current.state)) fail(`PACT_SAGA_NOT_EXECUTABLE:${current.state}`);
 
+    current = await acquireLease(current);
+    let fence = fenceOf(current);
+
     if (current.state === 'EXECUTING' && current.steps.some(step => step.state === 'EXECUTING')) {
-      current = await persist(current, next => { next.state = 'RECONCILIATION_REQUIRED'; });
+      current = await persistFenced(current, fence, next => { next.state = 'RECONCILIATION_REQUIRED'; });
       return publicRecord(current);
     }
 
-    if (current.state === 'PLANNED') current = await persist(current, next => { next.state = 'EXECUTING'; });
+    if (current.state === 'PLANNED') current = await persistFenced(current, fence, next => { next.state = 'EXECUTING'; });
 
     for (let index = 0; index < current.steps.length; index += 1) {
       let stepRecord = current.steps[index];
@@ -243,11 +332,14 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
       if (stepRecord.state !== 'PENDING') fail(`PACT_SAGA_INVALID_STEP_STATE:${stepRecord.state}`);
       const handler = registry.get(stepRecord.handler);
 
-      current = await persist(current, next => {
+      current = await renewLease(current, fence);
+      fence = fenceOf(current);
+      current = await persistFenced(current, fence, next => {
         const step = next.steps[index];
         step.state = 'EXECUTING';
         step.attempts += 1;
         step.startedAt = now();
+        step.executionFence = { ownerId: fence.ownerId, generation: fence.generation };
       });
       stepRecord = current.steps[index];
       const context = {
@@ -256,41 +348,46 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
         approvalBinding: current.approvalBinding,
         step: clone(stepRecord),
         input: clone(stepRecord.input),
-        idempotencyKey: `${current.sagaId}:${stepRecord.id}:forward`
+        idempotencyKey: `${current.sagaId}:${stepRecord.id}:forward`,
+        fence: clone(fence)
       };
 
       try {
         const result = await handler.execute(context);
+        current = await requireFence(current.sagaId, fence);
         if (!await handler.verify({ ...context, result: clone(result) })) throw new Error('PACT_SAGA_STEP_VERIFICATION_FAILED');
-        current = await persist(current, next => {
+        current = await requireFence(current.sagaId, fence);
+        current = await persistFenced(current, fence, next => {
           const step = next.steps[index];
           step.state = 'COMMITTED';
           step.result = clone(result);
           step.committedAt = now();
         });
       } catch (error) {
+        if (isFenceLost(error)) throw error;
         const info = errorInfo(error);
         if (info.uncertain) {
-          current = await persist(current, next => {
+          current = await persistFenced(current, fence, next => {
             next.state = 'RECONCILIATION_REQUIRED';
             next.failure = { ...info, phase: 'forward', stepId: stepRecord.id };
             next.steps[index].state = 'UNCERTAIN';
           });
           return publicRecord(current);
         }
-        current = await persist(current, next => {
+        current = await persistFenced(current, fence, next => {
           next.failure = { ...info, phase: 'forward', stepId: stepRecord.id };
           next.steps[index].state = 'FAILED';
           next.steps[index].failure = info;
         });
-        return compensate(current, current.failure);
+        return compensate(current, current.failure, fence);
       }
     }
 
-    current = await persist(current, next => {
+    current = await persistFenced(current, fence, next => {
       next.state = 'COMMITTED';
       next.committedAt = now();
       next.failure = null;
+      next.lease = null;
     });
     return publicRecord(current);
   }
@@ -301,23 +398,31 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
     if (TERMINAL.has(current.state)) return publicRecord(current);
     if (current.state !== 'RECONCILIATION_REQUIRED') fail(`PACT_SAGA_RECONCILIATION_NOT_REQUIRED:${current.state}`);
 
+    current = await acquireLease(current);
+    let fence = fenceOf(current);
+
     const forwardIndex = current.steps.findIndex(step => step.state === 'UNCERTAIN' || step.state === 'EXECUTING');
     if (forwardIndex >= 0) {
       const stepRecord = current.steps[forwardIndex];
       const handler = registry.get(stepRecord.handler);
+      current = await renewLease(current, fence);
+      fence = fenceOf(current);
       const context = {
         sagaId: current.sagaId,
         planHash: current.planHash,
         approvalBinding: current.approvalBinding,
         step: clone(stepRecord),
         input: clone(stepRecord.input),
-        idempotencyKey: `${current.sagaId}:${stepRecord.id}:forward`
+        idempotencyKey: `${current.sagaId}:${stepRecord.id}:forward`,
+        fence: clone(fence)
       };
       const resolved = outcome(await handler.reconcile(context), 'PACT_SAGA_INVALID_RECONCILIATION_RESULT');
+      current = await requireFence(current.sagaId, fence);
       if (resolved === 'uncertain') return publicRecord(current);
       if (resolved === 'committed') {
         if (!await handler.verify(context)) fail('PACT_SAGA_RECONCILIATION_VERIFICATION_FAILED');
-        current = await persist(current, next => {
+        current = await requireFence(current.sagaId, fence);
+        current = await persistFenced(current, fence, next => {
           next.state = 'EXECUTING';
           next.failure = null;
           next.steps[forwardIndex].state = 'COMMITTED';
@@ -325,12 +430,12 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
         });
         return execute({ sagaId: current.sagaId });
       }
-      current = await persist(current, next => {
+      current = await persistFenced(current, fence, next => {
         next.steps[forwardIndex].state = 'FAILED';
         next.steps[forwardIndex].failure = { code: 'PACT_SAGA_RECONCILED_NOT_COMMITTED', uncertain: false };
         next.failure = { code: 'PACT_SAGA_RECONCILED_NOT_COMMITTED', uncertain: false, phase: 'forward', stepId: stepRecord.id };
       });
-      return compensate(current, current.failure);
+      return compensate(current, current.failure, fence);
     }
 
     const compensationIndex = current.steps.findIndex(step => step.state === 'COMPENSATION_UNCERTAIN');
@@ -338,6 +443,8 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
       const stepRecord = current.steps[compensationIndex];
       const handler = registry.get(stepRecord.handler);
       if (typeof handler.reconcileCompensation !== 'function') return publicRecord(current);
+      current = await renewLease(current, fence);
+      fence = fenceOf(current);
       const context = {
         sagaId: current.sagaId,
         planHash: current.planHash,
@@ -345,24 +452,27 @@ export function createPactSagaCoordinator({ store, handlers, now = () => Date.no
         step: clone(stepRecord),
         input: clone(stepRecord.input),
         forwardResult: clone(stepRecord.result),
-        idempotencyKey: `${current.sagaId}:${stepRecord.id}:compensate`
+        idempotencyKey: `${current.sagaId}:${stepRecord.id}:compensate`,
+        fence: clone(fence)
       };
       const resolved = outcome(await handler.reconcileCompensation(context), 'PACT_SAGA_INVALID_COMPENSATION_RECONCILIATION_RESULT');
+      current = await requireFence(current.sagaId, fence);
       if (resolved === 'uncertain') return publicRecord(current);
       if (resolved === 'committed') {
         if (typeof handler.verifyCompensation === 'function' && !await handler.verifyCompensation(context)) fail('PACT_SAGA_COMPENSATION_RECONCILIATION_VERIFICATION_FAILED');
-        current = await persist(current, next => {
+        current = await requireFence(current.sagaId, fence);
+        current = await persistFenced(current, fence, next => {
           next.steps[compensationIndex].state = 'COMPENSATED';
           next.steps[compensationIndex].reconciledAt = now();
           next.state = 'COMPENSATING';
         });
-        return compensate(current, current.failure);
+        return compensate(current, current.failure, fence);
       }
-      current = await persist(current, next => {
+      current = await persistFenced(current, fence, next => {
         next.steps[compensationIndex].state = 'COMMITTED';
         next.state = 'COMPENSATING';
       });
-      return compensate(current, current.failure);
+      return compensate(current, current.failure, fence);
     }
 
     fail('PACT_SAGA_CORRUPT_RECONCILIATION_STATE');
