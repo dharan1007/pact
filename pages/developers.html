@@ -55,7 +55,22 @@ const runtime = createPactServerRuntime({
     id: 'example.account', version: '1.0.0'
   }),
   canonical
-});</code></pre></div><div class="dev-copy"><div class="kicker">REAL PROVIDERS</div><h2>Bind the exact approved plan to the provider's real revision.</h2><p>The REST-resource bridge reads the provider's JSON object and <code>ETag</code>, converts that provider revision into PACT's monotonic canonical version, and commits with <code>If-Match</code> plus <code>Idempotency-Key</code>. Out-of-band provider drift makes an earlier approval stale before mutation. A lost provider response can be recovered only when a subsequent read observes the exact intended resource under a new ETag.</p><p>Provider credentials stay server-side. The bridge refuses insecure remote HTTP origins, cross-origin resource redirects/configuration and provider responses without an ETag. PACT does not claim exactly-once semantics when a third-party provider ignores conditional writes or idempotency.</p><p>The official <code>/api/pact</code> entrypoint can select this mode using <code>PACT_RUNTIME_MODE=rest-json</code> with <code>PACT_REST_BASE_URL</code>, <code>PACT_REST_RESOURCE_PATH</code>, <code>PACT_REST_RESOURCE_KEY</code> and <code>PACT_REST_ADAPTER_ID</code>. See <a href="/docs/rest-provider.md"><code>/docs/rest-provider.md</code></a> for the full server-only configuration contract.</p></div></section><section class="section developer-grid"><div class="code-window"><div class="window-top"><span></span><span></span><span></span><b>HTTP connector</b></div><pre><code>import { createPactHttpConnector } from '/sdk/http.js';
+});
+
+const intent = {
+  operations: [
+    { path: ['account', 'owner'], value: 'Maya' },
+    { path: ['account', 'status'], value: 'suspended' },
+    { path: ['access', 'role'], value: 'read' },
+    { path: ['access', 'enabled'], value: false }
+  ]
+};
+
+const preview = await runtime.service.preview({
+  adapter: { id: 'example.account', version: '1.0.0' },
+  intent
+});
+// One frozen plan → one approval → one provider write → one receipt.</code></pre></div><div class="dev-copy"><div class="kicker">REAL PROVIDERS</div><h2>Bind a complete business change to the provider's real revision.</h2><p>The REST-resource adapter accepts a backward-compatible single <code>{path, value}</code> intent or a batch of up to 256 non-overlapping JSON-path replacements. A batch becomes one deterministic multi-effect plan, one human approval capability, one ETag-conditional provider mutation and one verified receipt. Duplicate or ancestor/descendant-overlapping paths are rejected so mutation order cannot change the meaning of the approved plan.</p><p>The REST-resource bridge reads the provider's JSON object and <code>ETag</code>, converts that provider revision into PACT's monotonic canonical version, and commits with <code>If-Match</code> plus <code>Idempotency-Key</code>. Out-of-band provider drift makes an earlier approval stale before mutation. A lost provider response can be recovered only when a subsequent read observes the exact intended resource under a new ETag.</p><p>Provider credentials stay server-side. The bridge refuses insecure remote HTTP origins, cross-origin resource redirects/configuration and provider responses without an ETag. PACT does not claim exactly-once semantics when a third-party provider ignores conditional writes or idempotency, and batch atomicity is scoped to the provider's single resource mutation rather than falsely claiming a distributed transaction across unrelated providers.</p><p>The official <code>/api/pact</code> entrypoint can select this mode using <code>PACT_RUNTIME_MODE=rest-json</code> with <code>PACT_REST_BASE_URL</code>, <code>PACT_REST_RESOURCE_PATH</code>, <code>PACT_REST_RESOURCE_KEY</code> and <code>PACT_REST_ADAPTER_ID</code>. See <a href="/docs/rest-provider.md"><code>/docs/rest-provider.md</code></a> for the full server-only configuration contract.</p></div></section><section class="section developer-grid"><div class="code-window"><div class="window-top"><span></span><span></span><span></span><b>HTTP connector</b></div><pre><code>import { createPactHttpConnector } from '/sdk/http.js';
 
 const api = createPactHttpConnector({
   baseUrl: 'https://example.com'
