@@ -162,6 +162,59 @@ test('JSON resource adapter produces declarative nested effects and rejects prot
   );
 });
 
+test('JSON resource adapter supports one approved atomic intent spanning multiple distinct fields', async () => {
+  const adapter = restModule.createPactJsonResourceAdapter({ id: 'account.lifecycle', version: '1.0.0' });
+  const state = {
+    version: 11,
+    resource: {
+      profile: { owner: 'acme-a', displayName: 'Ada' },
+      access: { role: 'admin', enabled: true },
+      status: 'active'
+    }
+  };
+  const intent = {
+    operations: [
+      { path: ['profile', 'owner'], value: 'maya' },
+      { path: ['access', 'role'], value: 'read' },
+      { path: ['access', 'enabled'], value: false },
+      { path: ['status'], value: 'suspended' }
+    ]
+  };
+
+  const plan = await adapter.plan({ intent, state });
+  assert.deepEqual(plan.effects, [
+    { path: 'resource.profile.owner', before: 'acme-a', after: 'maya' },
+    { path: 'resource.access.role', before: 'admin', after: 'read' },
+    { path: 'resource.access.enabled', before: true, after: false },
+    { path: 'resource.status', before: 'active', after: 'suspended' }
+  ]);
+  assert.deepEqual(plan.metadata, {
+    adapter: 'account.lifecycle',
+    semantics: 'json-path-batch-replace',
+    operationCount: 4
+  });
+
+  const committedState = clone(state);
+  committedState.version = 12;
+  committedState.resource.profile.owner = 'maya';
+  committedState.resource.access.role = 'read';
+  committedState.resource.access.enabled = false;
+  committedState.resource.status = 'suspended';
+  assert.equal(await adapter.verify({ intent, state: committedState }), true);
+
+  const partialState = clone(committedState);
+  partialState.resource.access.enabled = true;
+  assert.equal(await adapter.verify({ intent, state: partialState }), false);
+
+  await assert.rejects(
+    () => adapter.plan({
+      intent: { operations: [{ path: ['status'], value: 'suspended' }, { path: ['status'], value: 'disabled' }] },
+      state
+    }),
+    /PACT_REST_DUPLICATE_OPERATION_PATH/
+  );
+});
+
 test('REST bridge rejects insecure or cross-origin provider configuration and provider reads without ETag', async () => {
   assert.throws(() => restModule.createPactRestResourceBridge({
     store: atomicStore(), key: 'x', baseUrl: 'http://api.example.test', resourcePath: '/v1/x', fetchImpl: async () => response(200, {}, '"r1"')
