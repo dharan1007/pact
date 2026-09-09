@@ -143,14 +143,20 @@ export function createPactSagaCoordinator({
   now = () => Date.now(),
   prefix = 'pact:saga:',
   workerId = defaultWorkerId(),
-  leaseMs = DEFAULT_LEASE_MS
+  leaseMs = DEFAULT_LEASE_MS,
+  telemetry = null
 } = {}) {
   assertStore(store);
   const registry = normalizeHandlers(handlers);
   prefix = nonEmpty(prefix, 'PACT_SAGA_PREFIX_REQUIRED', 512);
   workerId = nonEmpty(workerId, 'PACT_SAGA_WORKER_ID_REQUIRED', 256);
   leaseMs = normalizeLeaseMs(leaseMs);
+  if (telemetry != null && (typeof telemetry !== 'object' || typeof telemetry.emit !== 'function')) fail('PACT_SAGA_INVALID_TELEMETRY');
 
+  const emit = async (type, fields = {}) => {
+    if (!telemetry) return;
+    await telemetry.emit({ type, ...fields });
+  };
   const keyFor = sagaId => `${prefix}${sagaId}`;
 
   async function load(sagaId) {
@@ -180,7 +186,10 @@ export function createPactSagaCoordinator({
 
   async function requireFence(sagaId, fence) {
     const latest = await load(sagaId);
-    if (!latest || !leaseMatches(latest, fence)) fail('PACT_SAGA_EXECUTION_FENCE_LOST');
+    if (!latest || !leaseMatches(latest, fence)) {
+      await emit('SAGA_FENCE_LOST', { sagaId, workerId: fence?.ownerId ?? workerId, leaseGeneration: fence?.generation ?? null });
+      fail('PACT_SAGA_EXECUTION_FENCE_LOST');
+    }
     return latest;
   }
 
@@ -195,10 +204,18 @@ export function createPactSagaCoordinator({
     if (existing && existing.expiresAt > at && existing.ownerId !== workerId) fail('PACT_SAGA_EXECUTION_LEASE_HELD');
     const sameLiveOwner = existing && existing.expiresAt > at && existing.ownerId === workerId;
     const generation = sameLiveOwner ? existing.generation : record.leaseGeneration + 1;
-    return persist(record, next => {
-      next.leaseGeneration = Math.max(next.leaseGeneration ?? 0, generation);
-      next.lease = { ownerId: workerId, generation, expiresAt: at + leaseMs };
+    const takeover = Boolean(existing && !sameLiveOwner);
+    const next = await persist(record, candidate => {
+      candidate.leaseGeneration = Math.max(candidate.leaseGeneration ?? 0, generation);
+      candidate.lease = { ownerId: workerId, generation, expiresAt: at + leaseMs };
     });
+    await emit(takeover ? 'SAGA_LEASE_TAKEN_OVER' : 'SAGA_LEASE_ACQUIRED', {
+      sagaId: record.sagaId,
+      workerId,
+      leaseGeneration: generation,
+      leaseExpiresAt: at + leaseMs
+    });
+    return next;
   }
 
   async function renewLease(record, fence) {
@@ -229,7 +246,10 @@ export function createPactSagaCoordinator({
       leaseGeneration: 0,
       lease: null
     };
-    if (await store.create(keyFor(sagaId), record)) return publicRecord(record);
+    if (await store.create(keyFor(sagaId), record)) {
+      await emit('SAGA_CREATED', { sagaId, stepCount: normalizedSteps.length });
+      return publicRecord(record);
+    }
     const existing = await load(sagaId);
     if (!existing || existing.definitionHash !== definitionHash) fail('PACT_SAGA_CREATE_CONFLICT');
     return publicRecord(existing);
@@ -240,6 +260,7 @@ export function createPactSagaCoordinator({
       next.state = 'COMPENSATING';
       next.failure = clone(failure);
     });
+    await emit('SAGA_COMPENSATION_STARTED', { sagaId: current.sagaId, leaseGeneration: fence.generation });
     let incomplete = false;
 
     for (let index = current.steps.length - 1; index >= 0; index -= 1) {
@@ -271,6 +292,8 @@ export function createPactSagaCoordinator({
         idempotencyKey: `${current.sagaId}:${stepRecord.id}:compensate`,
         fence: clone(fence)
       };
+      const providerStartedAt = now();
+      await emit('SAGA_COMPENSATION_STEP_STARTED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, leaseGeneration: fence.generation });
 
       try {
         const result = await handler.compensate(context);
@@ -284,21 +307,25 @@ export function createPactSagaCoordinator({
           step.compensationResult = clone(result);
           step.compensatedAt = now();
         });
+        await emit('SAGA_COMPENSATION_STEP_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, providerLatencyMs: Math.max(0, now() - providerStartedAt), outcome: 'compensated' });
       } catch (error) {
         if (isFenceLost(error)) throw error;
         const info = errorInfo(error);
         if (info.uncertain) {
-          return publicRecord(await persistFenced(current, fence, next => {
+          const uncertain = await persistFenced(current, fence, next => {
             next.state = 'RECONCILIATION_REQUIRED';
             next.failure = { ...info, phase: 'compensation', stepId: stepRecord.id };
             next.steps[index].state = 'COMPENSATION_UNCERTAIN';
-          }));
+          });
+          await emit('SAGA_RECONCILIATION_REQUIRED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, phase: 'compensation', leaseGeneration: fence.generation });
+          return publicRecord(uncertain);
         }
         incomplete = true;
         current = await persistFenced(current, fence, next => {
           next.steps[index].state = 'COMPENSATION_FAILED';
           next.steps[index].compensationFailure = info;
         });
+        await emit('SAGA_COMPENSATION_STEP_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, providerLatencyMs: Math.max(0, now() - providerStartedAt), outcome: 'failed', errorCode: info.code });
       }
     }
 
@@ -306,6 +333,7 @@ export function createPactSagaCoordinator({
       next.state = incomplete ? 'PARTIALLY_COMMITTED' : 'COMPENSATED';
       next.lease = null;
     });
+    await emit('SAGA_TERMINAL', { sagaId: current.sagaId, state: current.state });
     return publicRecord(current);
   }
 
@@ -321,6 +349,7 @@ export function createPactSagaCoordinator({
 
     if (current.state === 'EXECUTING' && current.steps.some(step => step.state === 'EXECUTING')) {
       current = await persistFenced(current, fence, next => { next.state = 'RECONCILIATION_REQUIRED'; });
+      await emit('SAGA_RECONCILIATION_REQUIRED', { sagaId: current.sagaId, phase: 'forward', leaseGeneration: fence.generation, cause: 'lease-takeover-inflight-step' });
       return publicRecord(current);
     }
 
@@ -351,6 +380,8 @@ export function createPactSagaCoordinator({
         idempotencyKey: `${current.sagaId}:${stepRecord.id}:forward`,
         fence: clone(fence)
       };
+      const providerStartedAt = now();
+      await emit('SAGA_STEP_STARTED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, resourceKey: stepRecord.resourceKey, leaseGeneration: fence.generation });
 
       try {
         const result = await handler.execute(context);
@@ -363,6 +394,7 @@ export function createPactSagaCoordinator({
           step.result = clone(result);
           step.committedAt = now();
         });
+        await emit('SAGA_STEP_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, providerLatencyMs: Math.max(0, now() - providerStartedAt), outcome: 'committed' });
       } catch (error) {
         if (isFenceLost(error)) throw error;
         const info = errorInfo(error);
@@ -372,6 +404,7 @@ export function createPactSagaCoordinator({
             next.failure = { ...info, phase: 'forward', stepId: stepRecord.id };
             next.steps[index].state = 'UNCERTAIN';
           });
+          await emit('SAGA_RECONCILIATION_REQUIRED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, phase: 'forward', leaseGeneration: fence.generation, providerLatencyMs: Math.max(0, now() - providerStartedAt), errorCode: info.code });
           return publicRecord(current);
         }
         current = await persistFenced(current, fence, next => {
@@ -379,6 +412,7 @@ export function createPactSagaCoordinator({
           next.steps[index].state = 'FAILED';
           next.steps[index].failure = info;
         });
+        await emit('SAGA_STEP_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, handler: stepRecord.handler, providerLatencyMs: Math.max(0, now() - providerStartedAt), outcome: 'failed', errorCode: info.code });
         return compensate(current, current.failure, fence);
       }
     }
@@ -389,6 +423,7 @@ export function createPactSagaCoordinator({
       next.failure = null;
       next.lease = null;
     });
+    await emit('SAGA_TERMINAL', { sagaId: current.sagaId, state: current.state });
     return publicRecord(current);
   }
 
@@ -400,6 +435,7 @@ export function createPactSagaCoordinator({
 
     current = await acquireLease(current);
     let fence = fenceOf(current);
+    await emit('SAGA_RECONCILIATION_STARTED', { sagaId: current.sagaId, leaseGeneration: fence.generation });
 
     const forwardIndex = current.steps.findIndex(step => step.state === 'UNCERTAIN' || step.state === 'EXECUTING');
     if (forwardIndex >= 0) {
@@ -428,6 +464,7 @@ export function createPactSagaCoordinator({
           next.steps[forwardIndex].state = 'COMMITTED';
           next.steps[forwardIndex].reconciledAt = now();
         });
+        await emit('SAGA_RECONCILIATION_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, outcome: 'committed' });
         return execute({ sagaId: current.sagaId });
       }
       current = await persistFenced(current, fence, next => {
@@ -435,6 +472,7 @@ export function createPactSagaCoordinator({
         next.steps[forwardIndex].failure = { code: 'PACT_SAGA_RECONCILED_NOT_COMMITTED', uncertain: false };
         next.failure = { code: 'PACT_SAGA_RECONCILED_NOT_COMMITTED', uncertain: false, phase: 'forward', stepId: stepRecord.id };
       });
+      await emit('SAGA_RECONCILIATION_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, outcome: 'not_committed' });
       return compensate(current, current.failure, fence);
     }
 
@@ -466,12 +504,14 @@ export function createPactSagaCoordinator({
           next.steps[compensationIndex].reconciledAt = now();
           next.state = 'COMPENSATING';
         });
+        await emit('SAGA_RECONCILIATION_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, phase: 'compensation', outcome: 'committed' });
         return compensate(current, current.failure, fence);
       }
       current = await persistFenced(current, fence, next => {
         next.steps[compensationIndex].state = 'COMMITTED';
         next.state = 'COMPENSATING';
       });
+      await emit('SAGA_RECONCILIATION_FINISHED', { sagaId: current.sagaId, stepId: stepRecord.id, phase: 'compensation', outcome: 'not_committed' });
       return compensate(current, current.failure, fence);
     }
 
