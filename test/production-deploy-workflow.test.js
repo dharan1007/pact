@@ -31,8 +31,8 @@ test('production deploy workflow accepts manual dispatch or one tightly gated pr
   assert.match(text, /PACT_RELEASE_NOT_CURRENT_HARDENING_HEAD/);
   assert.doesNotMatch(text, /git merge-base --is-ancestor/);
 
-  assert.match(text, /ref:\s*\$\{\{\s*steps\.release\.outputs\.release_sha\s*\}\}/);
-  assert.doesNotMatch(text, /ref:\s*production-release/);
+  assert.match(text, /name:\s*Read production release request[\s\S]*?ref:\s*production-release[\s\S]*?sparse-checkout:\s*release-request\.json/);
+  assert.match(text, /name:\s*Check out exact release[\s\S]*?ref:\s*\$\{\{\s*steps\.release\.outputs\.release_sha\s*\}\}/);
   assert.match(text, /PACT_SOURCE_COMMIT:\s*\$\{\{\s*steps\.release\.outputs\.release_sha\s*\}\}/);
 
   assert.match(text, /VERCEL_ORG_ID:\s*team_APBZJjf6iizHCTuseqHosFnU/);
