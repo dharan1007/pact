@@ -36,6 +36,24 @@ function normalizeRemoteFencing(value) {
   return Object.freeze({ mode, header });
 }
 
+function normalizeConditionalWrite(value) {
+  if (value == null) return 'conditional-write-unknown-strength';
+  if (value === 'conditional-write-unknown-strength' || value === 'strong-validator') return value;
+  fail('PACT_PROVIDER_REGISTRY_UNSUPPORTED_CONDITIONAL_WRITE');
+}
+
+function isStrongEntityTag(value) {
+  if (typeof value !== 'string') return false;
+  const tag = value.trim();
+  if (tag.startsWith('W/')) return false;
+  if (tag.length < 2 || tag[0] !== '"' || tag.at(-1) !== '"') return false;
+  for (let index = 1; index < tag.length - 1; index += 1) {
+    const code = tag.charCodeAt(index);
+    if (code === 0x22 || code <= 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
 function normalizeProviderConfig(raw, env) {
   if (!isPlainObject(raw)) fail('PACT_PROVIDER_REGISTRY_INVALID_PROVIDER');
   const id = nonEmpty(raw.id, 'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED', 256);
@@ -53,6 +71,7 @@ function normalizeProviderConfig(raw, env) {
   const reversible = requested.reversible === true;
   if (compensation && !reversible) fail('PACT_PROVIDER_REGISTRY_INVALID_REVERSIBILITY');
   const remoteFencing = normalizeRemoteFencing(requested.remoteFencing);
+  const conditionalWrite = normalizeConditionalWrite(requested.conditionalWrite);
 
   let bearerToken = '';
   let secretConfigured = false;
@@ -77,7 +96,7 @@ function normalizeProviderConfig(raw, env) {
     capabilities: Object.freeze({
       atomicDomain,
       resourceKey,
-      conditionalWrite: 'strong-etag',
+      conditionalWrite,
       idempotency: 'provider-key+durable-replay',
       mutation: method,
       readAfterWrite: 'strong-response+canonical-reread',
@@ -167,12 +186,26 @@ function publicProvider(provider) {
 
 function createRestSagaHandler({ store, provider, fetchImpl }) {
   const baseHeaders = provider.bearerToken ? { authorization: `Bearer ${provider.bearerToken}` } : {};
+  const qualifiedFetchImpl = provider.capabilities.conditionalWrite === 'strong-validator'
+    ? async (url, options = {}) => {
+        const response = await fetchImpl(url, options);
+        const method = String(options.method ?? 'GET').toUpperCase();
+        if (method === 'GET' && response?.ok) {
+          const headers = response.headers;
+          const originalGet = typeof headers?.get === 'function' ? headers.get.bind(headers) : null;
+          if (!originalGet) fail('PACT_REST_STRONG_ETAG_REQUIRED');
+          const etag = originalGet('etag');
+          if (!isStrongEntityTag(etag)) fail('PACT_REST_STRONG_ETAG_REQUIRED');
+        }
+        return response;
+      }
+    : fetchImpl;
   const createBridge = (extraHeaders = {}) => createPactRestResourceBridge({
     store,
     key: provider.resourceKey,
     baseUrl: provider.baseUrl,
     resourcePath: provider.resourcePath,
-    fetchImpl,
+    fetchImpl: qualifiedFetchImpl,
     headers: { ...baseHeaders, ...extraHeaders },
     method: provider.method
   });
