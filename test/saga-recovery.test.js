@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createPactSagaAuthorityService } from '../src/saga-protocol.js';
 import { createPactHttpHandler } from '../src/http-handler.js';
 import { createPactHttpConnector } from '../src/http.js';
+import { createPactAgentToolCatalog, registerPactWebMcpBridge, registerPactMcpBridge } from '../src/agent-bridge.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
 
@@ -179,4 +180,42 @@ test('HTTP authority and connector expose operator recovery inspection and resol
   assert.equal(JSON.parse(requests[0].body).operation, 'saga_recovery_inspect');
   assert.equal(JSON.parse(requests[1].body).operation, 'saga_recovery_resolve');
   assert.equal(requests[1].headers['idempotency-key'], 'recovery-1');
+});
+
+test('MCP and WebMCP expose recovery inspection and consequential resolution with idempotency', async () => {
+  const calls = [];
+  const normal = op => async (payload, options) => { calls.push({ op, payload, options }); return { op }; };
+  const consequential = op => async (payload, idempotencyKey, options) => { calls.push({ op, payload, idempotencyKey, options }); return { op, idempotencyKey }; };
+  const connector = {
+    inspect: normal('inspect'), preview: normal('preview'), approve: normal('approve'), commit: consequential('commit'), verify: normal('verify'), receipt: normal('receipt'),
+    sagaPreview: normal('sagaPreview'), sagaApprove: normal('sagaApprove'), sagaExecute: consequential('sagaExecute'), sagaInspect: normal('sagaInspect'), sagaReconcile: consequential('sagaReconcile'),
+    sagaRecoveryInspect: normal('sagaRecoveryInspect'), sagaRecoveryResolve: consequential('sagaRecoveryResolve'), sagaReceipt: normal('sagaReceipt')
+  };
+
+  const catalog = createPactAgentToolCatalog({ connector });
+  const recoveryInspect = catalog.tools().find(tool => tool.name === 'pact_saga_recovery_inspect');
+  const recoveryResolve = catalog.tools().find(tool => tool.name === 'pact_saga_recovery_resolve');
+  assert.equal(recoveryInspect.annotations.readOnlyHint, true);
+  assert.equal(recoveryResolve.annotations.idempotentHint, true);
+  assert.equal(recoveryResolve.inputSchema.required.includes('idempotencyKey'), true);
+  await catalog.execute('pact_saga_recovery_resolve', { payload: { sagaId: 'saga_1' }, idempotencyKey: 'recover-1' });
+  assert.equal(calls.at(-1).op, 'sagaRecoveryResolve');
+  assert.equal(calls.at(-1).idempotencyKey, 'recover-1');
+
+  const registrations = [];
+  const modelContext = { async registerTool(tool, options) { registrations.push({ tool, options }); } };
+  const webmcp = await registerPactWebMcpBridge({ connector, modelContext });
+  assert.equal(webmcp.supported, true);
+  assert.equal(registrations.some(entry => entry.tool.name === 'pact_saga_recovery_inspect'), true);
+  assert.equal(registrations.some(entry => entry.tool.name === 'pact_saga_recovery_resolve'), true);
+  webmcp.dispose();
+
+  const mcpRegistrations = [];
+  const server = { registerTool(name, config, handler) { mcpRegistrations.push({ name, config, handler }); return { name }; } };
+  registerPactMcpBridge({ connector, server, schemaFactory: jsonSchema => ({ jsonSchema }) });
+  const mcpResolve = mcpRegistrations.find(entry => entry.name === 'pact_saga_recovery_resolve');
+  assert.equal(mcpResolve.config.annotations.idempotentHint, true);
+  const mcpResult = await mcpResolve.handler({ payload: { sagaId: 'saga_1' }, idempotencyKey: 'recover-2' }, {});
+  assert.equal(mcpResult.structuredContent.op, 'sagaRecoveryResolve');
+  assert.equal(mcpResult.structuredContent.idempotencyKey, 'recover-2');
 });
