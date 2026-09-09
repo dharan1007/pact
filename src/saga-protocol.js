@@ -1,6 +1,7 @@
 import { sha256Hex } from './engine.js';
 import { createPactAuthority } from './authority.js';
 import { createPactSagaCoordinator } from './saga.js';
+import { buildSagaEvidenceChain } from './evidence-chain.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
@@ -481,6 +482,19 @@ export function createPactSagaAuthorityService({
     if (record.state !== 'APPROVED') fail('PACT_SAGA_PROTOCOL_NOT_APPROVED');
     const execution = await coordinator.inspect({ sagaId: record.id });
     if (!TERMINAL.has(execution.state)) fail('PACT_SAGA_PROTOCOL_RECEIPT_NOT_AVAILABLE');
+    const evidenceChain = await buildSagaEvidenceChain({
+      sagaId: record.id,
+      planHash: record.planHash,
+      createdAt: record.createdAt,
+      planSteps: record.steps,
+      approvalBinding: record.approvalBinding,
+      approvalClaims: clone(record.approvalClaims),
+      approvedAt: record.approvedAt,
+      executionAuthorization: clone(record.executionAuthorization),
+      executionAuthorizedAt: record.executionAuthorizedAt,
+      recoveryDecisions: clone(record.recoveryDecisions),
+      execution: clone(execution)
+    });
     const body = {
       sagaId: record.id,
       state: execution.state,
@@ -492,7 +506,10 @@ export function createPactSagaAuthorityService({
       steps: clone(execution.steps),
       failure: clone(execution.failure ?? null),
       completedAt: execution.committedAt ?? execution.updatedAt,
-      issuedAt: now()
+      issuedAt: now(),
+      evidenceHeadHash: evidenceChain.headHash,
+      evidenceEventCount: evidenceChain.events.length,
+      evidenceChain
     };
     const receipt = { ...body, receiptHash: await sha256Hex(body) };
     record = await persist(record, next => { next.receipt = clone(receipt); });
