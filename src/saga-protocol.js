@@ -168,6 +168,14 @@ export function createPactSagaAuthorityService({
     return validateProtocolRecord(next);
   }
 
+  async function approvalArtifactHash(record, approval) {
+    return sha256Hex({
+      sagaId: record.id,
+      planHash: record.planHash,
+      approval: assertJson(approval, 'PACT_SAGA_PROTOCOL_APPROVAL_MUST_BE_JSON')
+    });
+  }
+
   async function sagaPreview({ steps } = {}) {
     const normalizedSteps = normalizePreviewSteps(steps, handlers);
     const id = `saga_${globalThis.crypto.randomUUID()}`;
@@ -181,6 +189,7 @@ export function createPactSagaAuthorityService({
       createdAt: now(),
       updatedAt: now(),
       approvalClaims: null,
+      approvalArtifactHash: null,
       approvedAt: null,
       capabilityToken: null,
       capabilityExpiresAt: null,
@@ -197,7 +206,12 @@ export function createPactSagaAuthorityService({
   async function sagaApprove({ sagaId, approval } = {}) {
     let record = await load(sagaId);
     if (!record) fail('PACT_SAGA_PROTOCOL_NOT_FOUND');
+    const artifactHash = await approvalArtifactHash(record, approval);
     if (record.state === 'APPROVED') {
+      if (typeof record.approvalArtifactHash !== 'string' || record.approvalArtifactHash.length !== 64) {
+        fail('PACT_SAGA_PROTOCOL_APPROVAL_REPLAY_UNBOUND');
+      }
+      if (record.approvalArtifactHash !== artifactHash) fail('PACT_SAGA_PROTOCOL_APPROVAL_REPLAY_CONFLICT');
       return {
         saga: publicSaga(record, await coordinator.inspect({ sagaId: record.id })),
         capability: { token: record.capabilityToken, expiresAt: record.capabilityExpiresAt, claims: clone(record.approvalClaims) },
@@ -206,14 +220,15 @@ export function createPactSagaAuthorityService({
     }
     if (record.state !== 'PREVIEWED') fail('PACT_SAGA_PROTOCOL_NOT_PREVIEWED');
 
+    const normalizedApproval = assertJson(approval, 'PACT_SAGA_PROTOCOL_APPROVAL_MUST_BE_JSON');
     const capability = await authority.issue({
-      approval: clone(approval),
+      approval: normalizedApproval,
       txId: record.id,
       planHash: record.planHash,
       baseVersion: 0,
       adapter: ADAPTER
     });
-    const approvalBinding = await sha256Hex({ planHash: record.planHash, claims: capability.claims });
+    const approvalBinding = await sha256Hex({ planHash: record.planHash, claims: capability.claims, approvalArtifactHash: artifactHash });
     await coordinator.create({
       sagaId: record.id,
       planHash: record.planHash,
@@ -224,6 +239,7 @@ export function createPactSagaAuthorityService({
       next.state = 'APPROVED';
       next.approvedAt = now();
       next.approvalClaims = clone(capability.claims);
+      next.approvalArtifactHash = artifactHash;
       next.capabilityToken = capability.token;
       next.capabilityExpiresAt = capability.expiresAt;
       next.approvalBinding = approvalBinding;
