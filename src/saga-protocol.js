@@ -6,6 +6,7 @@ const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
 const TERMINAL = new Set(['COMMITTED', 'COMPENSATED', 'PARTIALLY_COMMITTED']);
 const ADAPTER = Object.freeze({ id: 'pact.saga', version: '1.0.0' });
+const BOOLEAN_REQUIREMENTS = Object.freeze(['conditionalWrite', 'idempotency', 'reconciliation', 'compensation', 'reversible']);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -35,7 +36,45 @@ function assertStore(store) {
   }
 }
 
-function normalizePreviewSteps(steps) {
+function normalizeRequirements(value) {
+  if (value == null) return {};
+  if (!isPlainObject(value)) fail('PACT_SAGA_PROTOCOL_INVALID_REQUIREMENTS');
+  const allowed = new Set([...BOOLEAN_REQUIREMENTS, 'mutation']);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) fail(`PACT_SAGA_PROTOCOL_UNKNOWN_REQUIREMENT:${key}`);
+  const out = {};
+  for (const key of BOOLEAN_REQUIREMENTS) {
+    if (value[key] == null) continue;
+    if (value[key] !== true) fail(`PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:${key}`);
+    out[key] = true;
+  }
+  if (value.mutation != null) out.mutation = nonEmpty(value.mutation, 'PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:mutation', 64).toUpperCase();
+  return out;
+}
+
+function negotiateHandler({ handlerName, resourceKey, atomicDomain, requirements, handlers }) {
+  const handler = handlers[handlerName];
+  if (!isPlainObject(handler)) fail(`PACT_SAGA_PROTOCOL_HANDLER_NOT_REGISTERED:${handlerName}`);
+  const capabilities = isPlainObject(handler.capabilities) ? handler.capabilities : {};
+  if (capabilities.atomicDomain != null && capabilities.atomicDomain !== atomicDomain) fail('PACT_SAGA_PROTOCOL_ATOMIC_DOMAIN_MISMATCH');
+  if (capabilities.resourceKey != null && capabilities.resourceKey !== resourceKey) fail('PACT_SAGA_PROTOCOL_RESOURCE_MISMATCH');
+  for (const key of BOOLEAN_REQUIREMENTS) {
+    if (requirements[key] !== true) continue;
+    if (key === 'conditionalWrite') {
+      if (typeof capabilities.conditionalWrite !== 'string' || !capabilities.conditionalWrite) fail(`PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:${key}`);
+      continue;
+    }
+    if (key === 'idempotency') {
+      if (typeof capabilities.idempotency !== 'string' || !capabilities.idempotency) fail(`PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:${key}`);
+      continue;
+    }
+    if (capabilities[key] !== true) fail(`PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:${key}`);
+  }
+  if (requirements.mutation != null && String(capabilities.mutation ?? '').toUpperCase() !== requirements.mutation) {
+    fail('PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:mutation');
+  }
+}
+
+function normalizePreviewSteps(steps, handlers) {
   if (!Array.isArray(steps) || steps.length < 1) fail('PACT_SAGA_PROTOCOL_STEPS_REQUIRED');
   if (steps.length > 64) fail('PACT_SAGA_PROTOCOL_TOO_MANY_STEPS');
   const ids = new Set();
@@ -50,7 +89,16 @@ function normalizePreviewSteps(steps) {
     if (resources.has(resourceKey)) fail('PACT_SAGA_PROTOCOL_DUPLICATE_RESOURCE');
     ids.add(id);
     resources.add(resourceKey);
-    return { id, handler, resourceKey, atomicDomain, input: assertJson(raw.input, 'PACT_SAGA_PROTOCOL_INPUT_MUST_BE_JSON') };
+    const requirements = normalizeRequirements(raw.requirements);
+    negotiateHandler({ handlerName: handler, resourceKey, atomicDomain, requirements, handlers });
+    return {
+      id,
+      handler,
+      resourceKey,
+      atomicDomain,
+      requirements,
+      input: assertJson(raw.input, 'PACT_SAGA_PROTOCOL_INPUT_MUST_BE_JSON')
+    };
   });
 }
 
@@ -117,7 +165,7 @@ export function createPactSagaAuthorityService({
   }
 
   async function sagaPreview({ steps } = {}) {
-    const normalizedSteps = normalizePreviewSteps(steps);
+    const normalizedSteps = normalizePreviewSteps(steps, handlers);
     const id = `saga_${globalThis.crypto.randomUUID()}`;
     const planHash = await sha256Hex({ sagaId: id, adapter: ADAPTER, baseVersion: 0, steps: normalizedSteps });
     const record = {
