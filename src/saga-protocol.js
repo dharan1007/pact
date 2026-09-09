@@ -6,7 +6,7 @@ const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
 const TERMINAL = new Set(['COMMITTED', 'COMPENSATED', 'PARTIALLY_COMMITTED']);
 const ADAPTER = Object.freeze({ id: 'pact.saga', version: '1.0.0' });
-const BOOLEAN_REQUIREMENTS = Object.freeze(['conditionalWrite', 'idempotency', 'reconciliation', 'compensation', 'reversible']);
+const BOOLEAN_REQUIREMENTS = Object.freeze(['conditionalWrite', 'idempotency', 'reconciliation', 'compensation', 'reversible', 'remoteFencing']);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -65,6 +65,10 @@ function negotiateHandler({ handlerName, resourceKey, atomicDomain, requirements
     }
     if (key === 'idempotency') {
       if (typeof capabilities.idempotency !== 'string' || !capabilities.idempotency) fail(`PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:${key}`);
+      continue;
+    }
+    if (key === 'remoteFencing') {
+      if (typeof capabilities.remoteFencing !== 'string' || !capabilities.remoteFencing) fail(`PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:${key}`);
       continue;
     }
     if (capabilities[key] !== true) fail(`PACT_SAGA_PROTOCOL_CAPABILITY_UNSATISFIED:${key}`);
