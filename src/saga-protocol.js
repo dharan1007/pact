@@ -63,9 +63,13 @@ function validateProtocolRecord(value) {
 }
 
 function publicSaga(protocol, coordinatorRecord = null) {
+  const coordinatorState = coordinatorRecord?.state;
+  const visibleState = protocol.state === 'APPROVED' && coordinatorState === 'PLANNED'
+    ? 'APPROVED'
+    : (coordinatorState ?? protocol.state);
   const out = {
     id: protocol.id,
-    state: coordinatorRecord?.state ?? protocol.state,
+    state: visibleState,
     planHash: protocol.planHash,
     steps: coordinatorRecord?.steps ?? clone(protocol.steps),
     createdAt: protocol.createdAt,
