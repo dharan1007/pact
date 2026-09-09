@@ -81,6 +81,17 @@ async function responseJson(response, code) {
   return value;
 }
 
+function validateReplay(value) {
+  if (!isPlainObject(value) || typeof value.key !== 'string' || !value.key || typeof value.payloadHash !== 'string' || !value.payloadHash || !isPlainObject(value.snapshot)) {
+    fail('PACT_REST_CORRUPT_REPLAY');
+  }
+  if (!Number.isSafeInteger(value.snapshot.version) || value.snapshot.version < 0 || !isPlainObject(value.snapshot.resource)) {
+    fail('PACT_REST_CORRUPT_REPLAY');
+  }
+  assertJson(value.snapshot, 'PACT_REST_CORRUPT_REPLAY');
+  return clone(value);
+}
+
 function validateRecord(value) {
   if (!isPlainObject(value) || !Number.isSafeInteger(value.version) || value.version < 0 ||
       typeof value.etag !== 'string' || !value.etag || !isPlainObject(value.resource) || !Array.isArray(value.replays)) {
@@ -95,14 +106,7 @@ function validateRecord(value) {
   }
 
   assertJson(value.resource, 'PACT_REST_CORRUPT_RECORD');
-  for (const replay of value.replays) {
-    if (!isPlainObject(replay) || typeof replay.key !== 'string' || typeof replay.payloadHash !== 'string' || !isPlainObject(replay.snapshot)) {
-      fail('PACT_REST_CORRUPT_RECORD');
-    }
-    if (!Number.isSafeInteger(replay.snapshot.version) || replay.snapshot.version < 0 || !isPlainObject(replay.snapshot.resource)) {
-      fail('PACT_REST_CORRUPT_RECORD');
-    }
-  }
+  for (const replay of value.replays) validateReplay(replay);
 
   const record = clone(value);
   record.canonicalVersion = canonicalVersion;
@@ -207,6 +211,41 @@ export function createPactRestResourceBridge({
   if (!['PUT', 'PATCH'].includes(method)) fail('PACT_REST_UNSUPPORTED_METHOD');
   if (!Number.isSafeInteger(maxRetries) || maxRetries < 1 || maxRetries > 64) fail('PACT_REST_INVALID_RETRY_LIMIT');
   const storeKey = `rest:${key}`;
+  const replayPrefix = `rest-replay:${key}:`;
+
+  async function replayStoreKey(idempotencyKey) {
+    return `${replayPrefix}${await sha256Hex({ namespace: 'pact-rest-replay-v1', idempotencyKey })}`;
+  }
+
+  async function readDetachedReplay(idempotencyKey) {
+    const raw = await store.get(await replayStoreKey(idempotencyKey));
+    if (!raw) return null;
+    const replay = validateReplay(raw);
+    if (replay.key !== idempotencyKey) fail('PACT_REST_REPLAY_HASH_COLLISION');
+    return replay;
+  }
+
+  async function persistDetachedReplay(entry) {
+    const replay = validateReplay(entry);
+    const replayKey = await replayStoreKey(replay.key);
+    if (await store.create(replayKey, replay)) return replay;
+    const existing = validateReplay(await store.get(replayKey));
+    if (existing.key !== replay.key) fail('PACT_REST_REPLAY_HASH_COLLISION');
+    if (existing.payloadHash !== replay.payloadHash || !same(existing.snapshot, replay.snapshot)) fail('PACT_REST_IDEMPOTENCY_CONFLICT');
+    return existing;
+  }
+
+  async function externalizeLegacyReplays(current) {
+    if (current.replays.length === 0) return current;
+    for (const replay of current.replays) await persistDetachedReplay(replay);
+    const compacted = {
+      ...current,
+      version: current.version + 1,
+      replays: []
+    };
+    if (!await store.compareAndSwap(storeKey, current.version, compacted)) return null;
+    return validateRecord(compacted);
+  }
 
   async function fetchProvider() {
     let response;
@@ -241,7 +280,11 @@ export function createPactRestResourceBridge({
         if (await store.create(storeKey, initial)) return clone(initial);
         continue;
       }
-      const current = validateRecord(raw);
+      let current = validateRecord(raw);
+      if (current.replays.length > 0) {
+        current = await externalizeLegacyReplays(current);
+        if (!current) continue;
+      }
       if (current.etag === remote.etag) {
         if (!same(current.resource, remote.resource)) fail('PACT_REST_ETAG_REUSED_FOR_DIFFERENT_STATE');
         return current;
@@ -251,7 +294,7 @@ export function createPactRestResourceBridge({
         canonicalVersion: current.canonicalVersion + 1,
         etag: remote.etag,
         resource: clone(remote.resource),
-        replays: clone(current.replays)
+        replays: []
       };
       if (await store.compareAndSwap(storeKey, current.version, next)) return clone(next);
     }
@@ -262,15 +305,6 @@ export function createPactRestResourceBridge({
     return canonicalFromRecord(await synchronize());
   }
 
-  async function appendReplay(current, { idempotencyKey, payloadHash, snapshot }) {
-    const candidate = {
-      ...current,
-      version: current.version + 1,
-      replays: [...clone(current.replays), { key: idempotencyKey, payloadHash, snapshot: clone(snapshot) }]
-    };
-    return store.compareAndSwap(storeKey, current.version, candidate);
-  }
-
   async function commit({ expectedVersion, nextState, authorization, idempotencyKey } = {}) {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) fail('PACT_REST_INVALID_EXPECTED_VERSION');
     const next = validateCanonical(nextState, expectedVersion + 1);
@@ -279,18 +313,25 @@ export function createPactRestResourceBridge({
     idempotencyKey = nonEmpty(idempotencyKey, 'PACT_REST_IDEMPOTENCY_KEY_REQUIRED');
     if (authorizationId !== idempotencyKey) fail('PACT_REST_AUTHORIZATION_BINDING_MISMATCH');
     const payloadHash = await sha256Hex({ expectedVersion, nextState: next, authorizationId, idempotencyKey });
+    const replayEntry = { key: idempotencyKey, payloadHash, snapshot: clone(next) };
+
+    const detachedReplay = await readDetachedReplay(idempotencyKey);
+    if (detachedReplay) {
+      if (detachedReplay.payloadHash !== payloadHash) fail('PACT_REST_IDEMPOTENCY_CONFLICT');
+      return clone(detachedReplay.snapshot);
+    }
 
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       const current = await synchronize();
-      const replay = current.replays.find(entry => entry.key === idempotencyKey);
+      const replay = await readDetachedReplay(idempotencyKey);
       if (replay) {
         if (replay.payloadHash !== payloadHash) fail('PACT_REST_IDEMPOTENCY_CONFLICT');
         return clone(replay.snapshot);
       }
 
       if (current.canonicalVersion === expectedVersion + 1 && same(current.resource, next.resource)) {
-        if (await appendReplay(current, { idempotencyKey, payloadHash, snapshot: next })) return clone(next);
-        continue;
+        await persistDetachedReplay(replayEntry);
+        return clone(next);
       }
       if (current.canonicalVersion !== expectedVersion) fail('PACT_REST_STALE_PROVIDER_STATE');
 
@@ -327,9 +368,12 @@ export function createPactRestResourceBridge({
         canonicalVersion: next.version,
         etag,
         resource: clone(resource),
-        replays: [...clone(current.replays), { key: idempotencyKey, payloadHash, snapshot: clone(next) }]
+        replays: []
       };
-      if (await store.compareAndSwap(storeKey, current.version, candidate)) return clone(next);
+      if (await store.compareAndSwap(storeKey, current.version, candidate)) {
+        await persistDetachedReplay(replayEntry);
+        return clone(next);
+      }
 
       // Another PACT instance may have persisted this exact provider write after
       // our response arrived. Re-sync and resolve through the replay/recovery path.
