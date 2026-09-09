@@ -181,3 +181,51 @@ test('HTTP connector exposes first-class saga operations', async () => {
   assert.equal(JSON.parse(requests[1].init.body).operation, 'saga_execute');
   assert.equal(requests[1].init.headers['idempotency-key'], 'saga-idempotency');
 });
+
+test('saga approval replay is bound to the exact original approval artifact', async () => {
+  let verifierCalls = 0;
+  const service = createPactSagaAuthorityService({
+    store: atomicStore(),
+    handlers: { provider: { async execute() { return {}; }, async verify() { return true; } } },
+    now: () => 5_000,
+    verifyApproval: async () => {
+      verifierCalls += 1;
+      return { humanPrincipal: 'human:security', agentSession: 'agent:approval-binding' };
+    }
+  });
+
+  const preview = await service.sagaPreview({ steps: [step('account', 'provider')] });
+  const originalApproval = {
+    signed: true,
+    approver: 'human:security',
+    evidence: { nonce: 'approval-7', method: 'webauthn' }
+  };
+  const approved = await service.sagaApprove({ sagaId: preview.saga.id, approval: originalApproval });
+  assert.equal(approved.idempotentReplay, false);
+  assert.equal(verifierCalls, 1);
+
+  const equivalentReplay = await service.sagaApprove({
+    sagaId: preview.saga.id,
+    approval: {
+      evidence: { method: 'webauthn', nonce: 'approval-7' },
+      approver: 'human:security',
+      signed: true
+    }
+  });
+  assert.equal(equivalentReplay.idempotentReplay, true, 'canonical-equivalent approval payload must replay');
+  assert.equal(equivalentReplay.capability.token, approved.capability.token);
+  assert.equal(verifierCalls, 1, 'replay must not invoke approval verification again');
+
+  await assert.rejects(
+    () => service.sagaApprove({
+      sagaId: preview.saga.id,
+      approval: {
+        signed: true,
+        approver: 'human:security',
+        evidence: { nonce: 'DIFFERENT', method: 'webauthn' }
+      }
+    }),
+    /PACT_SAGA_PROTOCOL_APPROVAL_REPLAY_CONFLICT/
+  );
+  assert.equal(verifierCalls, 1, 'conflicting replay must be rejected before verifier invocation');
+});
