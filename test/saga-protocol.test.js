@@ -104,7 +104,8 @@ test('one approved saga plan executes multiple resources and emits a hash-bound 
   assert.match(receipt.receipt.receiptHash, /^[a-f0-9]{64}$/);
 });
 
-test('uncertain saga execution is inspectable and can only reconcile under the original approved capability', async () => {
+test('uncertain saga remains recoverable after the short-lived execution capability expires', async () => {
+  let clock = 2_000;
   let uncertain = true;
   let committed = false;
   const handlers = {
@@ -124,7 +125,7 @@ test('uncertain saga execution is inspectable and can only reconcile under the o
     }
   };
   const service = createPactSagaAuthorityService({
-    store: atomicStore(), handlers, now: () => 2_000,
+    store: atomicStore(), handlers, now: () => clock, capabilityTtlMs: 1_000,
     verifyApproval: async () => ({ humanPrincipal: 'human:ops', agentSession: 'agent:ops' })
   });
   const preview = await service.sagaPreview({ steps: [step('access', 'provider')] });
@@ -133,9 +134,14 @@ test('uncertain saga execution is inspectable and can only reconcile under the o
   assert.equal(first.saga.state, 'RECONCILIATION_REQUIRED');
   const inspected = await service.sagaInspect({ sagaId: preview.saga.id });
   assert.equal(inspected.saga.state, 'RECONCILIATION_REQUIRED');
-  await assert.rejects(() => service.sagaReconcile({ sagaId: preview.saga.id, capabilityToken: 'wrong', idempotencyKey: 'exec-uncertain' }), /PACT_AUTHORITY_CAPABILITY_NOT_FOUND|PACT_SAGA_PROTOCOL_CAPABILITY_MISMATCH/);
+  await assert.rejects(() => service.sagaReconcile({ sagaId: preview.saga.id, capabilityToken: 'wrong', idempotencyKey: 'exec-uncertain' }), /PACT_SAGA_PROTOCOL_CAPABILITY_MISMATCH/);
+
+  clock = approved.capability.expiresAt + 60_000;
   const reconciled = await service.sagaReconcile({ sagaId: preview.saga.id, capabilityToken: approved.capability.token, idempotencyKey: 'exec-uncertain' });
   assert.equal(reconciled.saga.state, 'COMMITTED');
+
+  const replay = await service.sagaExecute({ sagaId: preview.saga.id, capabilityToken: approved.capability.token, idempotencyKey: 'exec-uncertain' });
+  assert.equal(replay.idempotentReplay, true, 'terminal replay must remain available after capability TTL once execution was already authorized');
 });
 
 test('HTTP authority surface exposes saga lifecycle and binds idempotency header to saga execution', async () => {
