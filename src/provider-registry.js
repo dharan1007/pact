@@ -254,6 +254,33 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
     }
   }
 
+  async function recoveryEvidence({ phase, input, idempotencyKey, forwardResult }) {
+    const plan = phase === 'compensation'
+      ? await prepareCompensation(forwardResult, idempotencyKey)
+      : await prepareForward(input, idempotencyKey);
+    let observed = null;
+    let classification = 'unavailable';
+    try {
+      observed = await bridge.read();
+      if (same(observed, plan.next)) classification = 'committed';
+      else if (same(observed, plan.before)) classification = 'not_committed';
+      else classification = 'diverged';
+    } catch {
+      classification = 'unavailable';
+    }
+    return {
+      provider: provider.id,
+      resourceKey: provider.resourceKey,
+      atomicDomain: provider.atomicDomain,
+      phase,
+      before: clone(plan.before),
+      intended: clone(plan.next),
+      observed: clone(observed),
+      classification,
+      capabilities: clone(provider.capabilities)
+    };
+  }
+
   const handler = {
     capabilities: provider.capabilities,
     async execute({ input, idempotencyKey, fence }) {
@@ -276,7 +303,8 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
     },
     async reconcile({ input, idempotencyKey, fence }) {
       return reconcilePlan(await prepareForward(input, idempotencyKey), fence);
-    }
+    },
+    recoveryEvidence
   };
 
   if (provider.capabilities.compensation) {
