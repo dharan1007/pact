@@ -38,14 +38,13 @@ function assertHash(value, code) {
 
 function normalizeEventInput(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('PACT_EVIDENCE_EVENT_REQUIRED');
-  const out = {
+  return {
     type: nonEmpty(raw.type, 'PACT_EVIDENCE_TYPE_REQUIRED', 96),
     occurredAt: timestamp(raw.occurredAt, 'PACT_EVIDENCE_OCCURRED_AT_REQUIRED'),
     stepId: raw.stepId == null ? null : nonEmpty(raw.stepId, 'PACT_EVIDENCE_STEP_ID_INVALID', 256),
     actor: raw.actor == null ? null : json(raw.actor, 'PACT_EVIDENCE_ACTOR_MUST_BE_JSON'),
     payload: json(raw.payload ?? null, 'PACT_EVIDENCE_PAYLOAD_MUST_BE_JSON')
   };
-  return out;
 }
 
 async function eventHash({ sagaId, planHash, sequence, previousHash, type, occurredAt, stepId, actor, payload }) {
@@ -136,6 +135,103 @@ export async function appendEvidence(chain, rawEvent) {
   };
   await verifyEvidenceChain(next);
   return next;
+}
+
+export async function buildSagaEvidenceChain({
+  sagaId,
+  planHash,
+  createdAt,
+  planSteps,
+  approvalBinding,
+  approvalClaims,
+  approvedAt,
+  executionAuthorization,
+  executionAuthorizedAt,
+  recoveryDecisions = [],
+  execution
+} = {}) {
+  if (!execution || typeof execution !== 'object' || !Array.isArray(execution.steps)) fail('PACT_EVIDENCE_EXECUTION_REQUIRED');
+  let chain = await createEvidenceGenesis({
+    sagaId,
+    planHash,
+    createdAt,
+    plan: { steps: json(planSteps, 'PACT_EVIDENCE_PLAN_MUST_BE_JSON') }
+  });
+
+  if (approvalBinding != null) {
+    chain = await appendEvidence(chain, {
+      type: 'APPROVAL_BOUND',
+      occurredAt: timestamp(approvedAt, 'PACT_EVIDENCE_APPROVED_AT_REQUIRED'),
+      actor: approvalClaims ?? null,
+      payload: { approvalBinding: assertHash(approvalBinding, 'PACT_EVIDENCE_APPROVAL_BINDING_INVALID') }
+    });
+  }
+
+  if (executionAuthorization != null) {
+    const authorization = json(executionAuthorization, 'PACT_EVIDENCE_EXECUTION_AUTHORIZATION_MUST_BE_JSON');
+    chain = await appendEvidence(chain, {
+      type: 'EXECUTION_AUTHORIZED',
+      occurredAt: timestamp(executionAuthorizedAt, 'PACT_EVIDENCE_EXECUTION_AUTHORIZED_AT_REQUIRED'),
+      actor: approvalClaims ?? null,
+      payload: {
+        authorizationId: authorization.authorizationId ?? null,
+        idempotencyKey: authorization.idempotencyKey ?? null,
+        authorizedAt: authorization.authorizedAt ?? executionAuthorizedAt
+      }
+    });
+  }
+
+  for (const rawStep of execution.steps) {
+    const step = json(rawStep, 'PACT_EVIDENCE_STEP_MUST_BE_JSON');
+    chain = await appendEvidence(chain, {
+      type: 'STEP_OUTCOME',
+      occurredAt: timestamp(step.completedAt ?? step.updatedAt ?? execution.committedAt ?? execution.updatedAt, 'PACT_EVIDENCE_STEP_TIME_REQUIRED'),
+      stepId: step.id,
+      payload: {
+        handler: step.handler ?? null,
+        resourceKey: step.resourceKey ?? null,
+        atomicDomain: step.atomicDomain ?? null,
+        state: step.state,
+        attempts: step.attempts ?? 0,
+        compensationAttempts: step.compensationAttempts ?? 0,
+        executionFence: step.executionFence ?? null,
+        result: step.result ?? null,
+        compensationResult: step.compensationResult ?? null,
+        failure: step.failure ?? null
+      }
+    });
+  }
+
+  for (const rawDecision of recoveryDecisions) {
+    const decision = json(rawDecision, 'PACT_EVIDENCE_RECOVERY_DECISION_MUST_BE_JSON');
+    chain = await appendEvidence(chain, {
+      type: 'RECOVERY_DECISION',
+      occurredAt: timestamp(decision.completedAt ?? decision.createdAt, 'PACT_EVIDENCE_RECOVERY_TIME_REQUIRED'),
+      actor: decision.claims ?? null,
+      payload: {
+        recoveryHash: decision.recoveryHash,
+        action: decision.action,
+        decisionHash: decision.decisionHash,
+        status: decision.status,
+        resultState: decision.resultState ?? null,
+        resultHash: decision.resultHash ?? null,
+        resolutionReceiptHash: decision.resolutionReceiptHash ?? null
+      }
+    });
+  }
+
+  chain = await appendEvidence(chain, {
+    type: 'SAGA_TERMINAL',
+    occurredAt: timestamp(execution.committedAt ?? execution.updatedAt, 'PACT_EVIDENCE_TERMINAL_TIME_REQUIRED'),
+    payload: {
+      state: execution.state,
+      leaseGeneration: execution.leaseGeneration ?? 0,
+      failure: execution.failure ?? null
+    }
+  });
+
+  await verifyEvidenceChain(chain);
+  return chain;
 }
 
 export const EVIDENCE_CHAIN_MAX_EVENTS = MAX_EVENTS;
