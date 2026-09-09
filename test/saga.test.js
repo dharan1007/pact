@@ -145,3 +145,68 @@ test('saga creation is idempotent only for the exact approved plan', async () =>
   assert.deepEqual(replay, first);
   await assert.rejects(() => saga.create({ ...plan, planHash: 'different' }), /PACT_SAGA_CREATE_CONFLICT/);
 });
+
+test('active saga lease prevents a second worker from entering the same execution', async () => {
+  const store = atomicStore();
+  let clock = 10_000;
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const handlers = {
+    provider: {
+      async execute() { await blocked; return {}; },
+      async verify() { return true; },
+      async reconcile() { return 'not_committed'; }
+    }
+  };
+  const first = createPactSagaCoordinator({ store, handlers, now: () => clock, workerId: 'worker-a', leaseMs: 5_000 });
+  const second = createPactSagaCoordinator({ store, handlers, now: () => clock, workerId: 'worker-b', leaseMs: 5_000 });
+  await first.create({ sagaId: 'saga_lease_held', planHash: 'plan', approvalBinding: 'approval', steps: [step('a', 'provider')] });
+  const running = first.execute({ sagaId: 'saga_lease_held' });
+  await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(() => second.execute({ sagaId: 'saga_lease_held' }), /PACT_SAGA_EXECUTION_LEASE_HELD/);
+  release();
+  assert.equal((await running).state, 'COMMITTED');
+});
+
+test('expired lease takeover fences a stale worker and forces reconciliation before any new provider mutation', async () => {
+  const store = atomicStore();
+  let clock = 20_000;
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const fences = [];
+  let executions = 0;
+  const handlers = {
+    provider: {
+      async execute({ fence }) {
+        executions += 1;
+        fences.push(clone(fence));
+        await blocked;
+        return { committed: true };
+      },
+      async verify() { return true; },
+      async reconcile() { return 'uncertain'; }
+    }
+  };
+  const stale = createPactSagaCoordinator({ store, handlers, now: () => clock, workerId: 'worker-a', leaseMs: 100 });
+  const takeover = createPactSagaCoordinator({ store, handlers, now: () => clock, workerId: 'worker-b', leaseMs: 100 });
+  await stale.create({ sagaId: 'saga_fenced', planHash: 'plan', approvalBinding: 'approval', steps: [step('a', 'provider'), step('b', 'provider')] });
+  const staleRun = stale.execute({ sagaId: 'saga_fenced' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  clock += 101;
+  const taken = await takeover.execute({ sagaId: 'saga_fenced' });
+  assert.equal(taken.state, 'RECONCILIATION_REQUIRED');
+  assert.equal(taken.lease.ownerId, 'worker-b');
+  assert.equal(taken.lease.generation, 2);
+  assert.equal(executions, 1, 'takeover must reconcile the in-flight step rather than issue another mutation');
+
+  release();
+  await assert.rejects(() => staleRun, /PACT_SAGA_EXECUTION_FENCE_LOST/);
+  const durable = await takeover.inspect({ sagaId: 'saga_fenced' });
+  assert.equal(durable.state, 'RECONCILIATION_REQUIRED');
+  assert.equal(durable.steps[0].state, 'EXECUTING');
+  assert.equal(durable.steps[1].state, 'PENDING');
+  assert.equal(durable.lease.ownerId, 'worker-b');
+  assert.equal(durable.lease.generation, 2);
+  assert.deepEqual(fences, [{ ownerId: 'worker-a', generation: 1, expiresAt: 20100 }]);
+});
