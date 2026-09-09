@@ -25,6 +25,17 @@ function assertStore(store) {
   }
 }
 
+function normalizeRemoteFencing(value) {
+  if (value == null) return null;
+  if (!isPlainObject(value)) fail('PACT_PROVIDER_REGISTRY_INVALID_REMOTE_FENCING');
+  const mode = nonEmpty(value.mode, 'PACT_PROVIDER_REGISTRY_REMOTE_FENCING_MODE_REQUIRED', 64);
+  if (mode !== 'monotonic-header') fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_MODE_UNSUPPORTED');
+  const header = nonEmpty(value.header, 'PACT_PROVIDER_REGISTRY_REMOTE_FENCING_HEADER_REQUIRED', 64).toLowerCase();
+  if (!/^x-[a-z0-9][a-z0-9-]{0,62}$/.test(header)) fail('PACT_PROVIDER_REGISTRY_UNSAFE_REMOTE_FENCING_HEADER');
+  if (['x-pact-idempotency-key', 'x-pact-authorization'].includes(header)) fail('PACT_PROVIDER_REGISTRY_UNSAFE_REMOTE_FENCING_HEADER');
+  return Object.freeze({ mode, header });
+}
+
 function normalizeProviderConfig(raw, env) {
   if (!isPlainObject(raw)) fail('PACT_PROVIDER_REGISTRY_INVALID_PROVIDER');
   const id = nonEmpty(raw.id, 'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED', 256);
@@ -41,6 +52,7 @@ function normalizeProviderConfig(raw, env) {
   const compensation = requested.compensation === true;
   const reversible = requested.reversible === true;
   if (compensation && !reversible) fail('PACT_PROVIDER_REGISTRY_INVALID_REVERSIBILITY');
+  const remoteFencing = normalizeRemoteFencing(requested.remoteFencing);
 
   let bearerToken = '';
   let secretConfigured = false;
@@ -61,6 +73,7 @@ function normalizeProviderConfig(raw, env) {
     method,
     bearerToken,
     secretConfigured,
+    remoteFencing,
     capabilities: Object.freeze({
       atomicDomain,
       resourceKey,
@@ -70,7 +83,8 @@ function normalizeProviderConfig(raw, env) {
       readAfterWrite: 'strong-response+canonical-reread',
       reconciliation: true,
       compensation,
-      reversible
+      reversible,
+      ...(remoteFencing ? { remoteFencing: remoteFencing.mode, fenceHeader: remoteFencing.header } : {})
     })
   };
 }
@@ -128,6 +142,12 @@ function validateExecutionPlan(value) {
   return clone(value);
 }
 
+function validateFence(fence) {
+  if (!isPlainObject(fence) || !Number.isSafeInteger(fence.generation) || fence.generation < 1 ||
+      typeof fence.ownerId !== 'string' || !fence.ownerId) fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCE_REQUIRED');
+  return fence.generation;
+}
+
 function markUncertain(error) {
   if (error?.message === 'PACT_REST_COMMIT_UNCERTAIN') error.uncertain = true;
   return error;
@@ -146,16 +166,22 @@ function publicProvider(provider) {
 }
 
 function createRestSagaHandler({ store, provider, fetchImpl }) {
-  const headers = provider.bearerToken ? { authorization: `Bearer ${provider.bearerToken}` } : {};
-  const bridge = createPactRestResourceBridge({
+  const baseHeaders = provider.bearerToken ? { authorization: `Bearer ${provider.bearerToken}` } : {};
+  const createBridge = (extraHeaders = {}) => createPactRestResourceBridge({
     store,
     key: provider.resourceKey,
     baseUrl: provider.baseUrl,
     resourcePath: provider.resourcePath,
     fetchImpl,
-    headers,
+    headers: { ...baseHeaders, ...extraHeaders },
     method: provider.method
   });
+  const bridge = createBridge();
+  const bridgeForFence = fence => {
+    if (!provider.remoteFencing) return bridge;
+    const generation = validateFence(fence);
+    return createBridge({ [provider.remoteFencing.header]: String(generation) });
+  };
   const adapter = createPactJsonResourceAdapter({ id: provider.id, version: '1.0.0' });
   const planPrefix = `provider-plan:${provider.id}:`;
 
@@ -205,8 +231,8 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
     return raced;
   }
 
-  async function commitPlan(plan) {
-    return bridge.commit({
+  async function commitPlan(plan, fence) {
+    return bridgeForFence(fence).commit({
       expectedVersion: plan.before.version,
       nextState: clone(plan.next),
       authorization: { authorizationId: plan.idempotencyKey },
@@ -214,9 +240,9 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
     });
   }
 
-  async function reconcilePlan(plan) {
+  async function reconcilePlan(plan, fence) {
     try {
-      await commitPlan(plan);
+      await commitPlan(plan, fence);
       return 'committed';
     } catch (error) {
       if (error?.message === 'PACT_REST_COMMIT_UNCERTAIN') return 'uncertain';
@@ -230,10 +256,10 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
 
   const handler = {
     capabilities: provider.capabilities,
-    async execute({ input, idempotencyKey }) {
+    async execute({ input, idempotencyKey, fence }) {
       const plan = await prepareForward(input, idempotencyKey);
       try {
-        const after = await commitPlan(plan);
+        const after = await commitPlan(plan, fence);
         return { provider: provider.id, resourceKey: provider.resourceKey, before: clone(plan.before), after: clone(after) };
       } catch (error) {
         throw markUncertain(error);
@@ -248,16 +274,16 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
       const observed = await bridge.read();
       return same(observed, plan.next);
     },
-    async reconcile({ input, idempotencyKey }) {
-      return reconcilePlan(await prepareForward(input, idempotencyKey));
+    async reconcile({ input, idempotencyKey, fence }) {
+      return reconcilePlan(await prepareForward(input, idempotencyKey), fence);
     }
   };
 
   if (provider.capabilities.compensation) {
-    handler.compensate = async ({ forwardResult, idempotencyKey }) => {
+    handler.compensate = async ({ forwardResult, idempotencyKey, fence }) => {
       const plan = await prepareCompensation(forwardResult, idempotencyKey);
       try {
-        const after = await commitPlan(plan);
+        const after = await commitPlan(plan, fence);
         return { provider: provider.id, resourceKey: provider.resourceKey, before: clone(plan.before), after: clone(after) };
       } catch (error) {
         throw markUncertain(error);
@@ -268,8 +294,8 @@ function createRestSagaHandler({ store, provider, fetchImpl }) {
       const observed = await bridge.read();
       return same(observed, plan.next);
     };
-    handler.reconcileCompensation = async ({ forwardResult, idempotencyKey }) => {
-      return reconcilePlan(await prepareCompensation(forwardResult, idempotencyKey));
+    handler.reconcileCompensation = async ({ forwardResult, idempotencyKey, fence }) => {
+      return reconcilePlan(await prepareCompensation(forwardResult, idempotencyKey), fence);
     };
   }
 
