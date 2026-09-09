@@ -1,4 +1,4 @@
-import { canonicalStringify, sha256Hex } from './engine.js';
+import { sha256Hex } from './engine.js';
 import { createPactAuthority } from './authority.js';
 import { createPactSagaCoordinator } from './saga.js';
 
@@ -187,7 +187,18 @@ export function createPactSagaAuthorityService({
     capabilityToken = nonEmpty(capabilityToken, 'PACT_SAGA_PROTOCOL_CAPABILITY_REQUIRED', 512);
     idempotencyKey = nonEmpty(idempotencyKey, 'PACT_SAGA_PROTOCOL_IDEMPOTENCY_KEY_REQUIRED');
     if (record.capabilityToken !== capabilityToken) fail('PACT_SAGA_PROTOCOL_CAPABILITY_MISMATCH');
-    if (record.executionIdempotencyKey != null && record.executionIdempotencyKey !== idempotencyKey) fail('PACT_SAGA_PROTOCOL_IDEMPOTENCY_CONFLICT');
+
+    if (record.executionIdempotencyKey != null) {
+      if (record.executionIdempotencyKey !== idempotencyKey) fail('PACT_SAGA_PROTOCOL_IDEMPOTENCY_CONFLICT');
+      if (!isPlainObject(record.executionAuthorization) || typeof record.executionAuthorization.authorizationId !== 'string') {
+        fail('PACT_SAGA_PROTOCOL_CORRUPT_EXECUTION_AUTHORIZATION');
+      }
+      return {
+        record,
+        authorization: { ...clone(record.executionAuthorization), idempotentReplay: true }
+      };
+    }
+
     const authorization = await authority.authorizeCommit({
       token: capabilityToken,
       txId: record.id,
@@ -195,13 +206,11 @@ export function createPactSagaAuthorityService({
       baseVersion: 0,
       idempotencyKey
     });
-    if (record.executionIdempotencyKey == null) {
-      record = await persist(record, next => {
-        next.executionIdempotencyKey = idempotencyKey;
-        next.executionAuthorization = clone(authorization);
-        next.executionAuthorizedAt = authorization.authorizedAt;
-      });
-    }
+    record = await persist(record, next => {
+      next.executionIdempotencyKey = idempotencyKey;
+      next.executionAuthorization = clone(authorization);
+      next.executionAuthorizedAt = authorization.authorizedAt;
+    });
     return { record, authorization };
   }
 
