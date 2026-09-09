@@ -53,13 +53,17 @@ function validateRecoveryClaims(value) {
 function normalizeRequirements(value) {
   if (value == null) return {};
   if (!isPlainObject(value)) fail('PACT_SAGA_PROTOCOL_INVALID_REQUIREMENTS');
-  const allowed = new Set([...BOOLEAN_REQUIREMENTS, 'mutation', 'conditionalWriteStrength', 'remoteFencingStrength']);
+  const allowed = new Set([...BOOLEAN_REQUIREMENTS, 'mutation', 'conditionalWriteStrength', 'remoteFencingStrength', 'humanRecoveryRequired']);
   for (const key of Object.keys(value)) if (!allowed.has(key)) fail(`PACT_SAGA_PROTOCOL_UNKNOWN_REQUIREMENT:${key}`);
   const out = {};
   for (const key of BOOLEAN_REQUIREMENTS) {
     if (value[key] == null) continue;
     if (value[key] !== true) fail(`PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:${key}`);
     out[key] = true;
+  }
+  if (value.humanRecoveryRequired != null) {
+    if (value.humanRecoveryRequired !== true) fail('PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:humanRecoveryRequired');
+    out.humanRecoveryRequired = true;
   }
   if (value.mutation != null) out.mutation = nonEmpty(value.mutation, 'PACT_SAGA_PROTOCOL_INVALID_REQUIREMENT:mutation', 64).toUpperCase();
   if (value.conditionalWriteStrength != null) {
@@ -195,6 +199,22 @@ function publicSaga(protocol, coordinatorRecord = null, operational = null) {
   if (coordinatorRecord?.committedAt != null) out.committedAt = coordinatorRecord.committedAt;
   if (operational != null) out.operational = clone(operational);
   return out;
+}
+
+function recoveryExecutionStep(execution) {
+  if (!isPlainObject(execution) || !Array.isArray(execution.steps)) return null;
+  return execution.steps.find(candidate => candidate.state === 'UNCERTAIN' || candidate.state === 'EXECUTING' || candidate.state === 'COMPENSATION_UNCERTAIN') ?? null;
+}
+
+function plannedStepFor(record, executionStep) {
+  if (!executionStep) return null;
+  return record.steps.find(candidate => candidate.id === executionStep.id) ?? null;
+}
+
+function humanRecoveryRequired(record, execution) {
+  const executionStep = recoveryExecutionStep(execution);
+  const planned = plannedStepFor(record, executionStep);
+  return planned?.requirements?.humanRecoveryRequired === true;
 }
 
 export function createPactSagaAuthorityService({
@@ -391,6 +411,10 @@ export function createPactSagaAuthorityService({
     let record = await load(sagaId);
     if (!record) fail('PACT_SAGA_PROTOCOL_NOT_FOUND');
     if (record.state !== 'APPROVED') fail('PACT_SAGA_PROTOCOL_NOT_APPROVED');
+    const executionBefore = await coordinator.inspect({ sagaId: record.id });
+    if (executionBefore.state === 'RECONCILIATION_REQUIRED' && humanRecoveryRequired(record, executionBefore)) {
+      fail('PACT_SAGA_HUMAN_RECOVERY_REQUIRED');
+    }
     ({ record } = await authorizeExecution(record, capabilityToken, idempotencyKey));
     const result = await coordinator.reconcile({ sagaId: record.id });
     return { saga: publicSaga(record, result, telemetry.deriveOperationalStatus(result)) };
@@ -407,6 +431,8 @@ export function createPactSagaAuthorityService({
       step = execution.steps.find(candidate => candidate.state === 'COMPENSATION_UNCERTAIN');
     }
     if (!step) fail('PACT_SAGA_PROTOCOL_CORRUPT_RECOVERY_STATE');
+    const plannedStep = plannedStepFor(record, step);
+    const requiresHuman = plannedStep?.requirements?.humanRecoveryRequired === true;
 
     const handler = handlers[step.handler];
     let providerEvidence = null;
@@ -443,6 +469,7 @@ export function createPactSagaAuthorityService({
       failure: clone(execution.failure ?? null),
       leaseGeneration: execution.leaseGeneration ?? 0,
       providerEvidence,
+      humanRecoveryRequired: requiresHuman,
       allowedActions: ['reconcile']
     };
     const recoveryHash = await sha256Hex({ namespace: 'pact-saga-recovery-v1', sagaId: record.id, planHash: record.planHash, recovery: recoveryEvidence });
