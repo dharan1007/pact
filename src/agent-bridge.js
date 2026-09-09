@@ -1,5 +1,5 @@
-const READ_ONLY = new Set(['pact_inspect','pact_get_transaction_receipt','pact_saga_inspect','pact_saga_get_receipt']);
-const CONSEQUENTIAL = new Set(['pact_commit_transaction','pact_saga_execute','pact_saga_reconcile']);
+const READ_ONLY = new Set(['pact_inspect','pact_get_transaction_receipt','pact_saga_inspect','pact_saga_get_receipt','pact_saga_recovery_inspect']);
+const CONSEQUENTIAL = new Set(['pact_commit_transaction','pact_saga_execute','pact_saga_reconcile','pact_saga_recovery_resolve']);
 
 const CORE_DEFINITIONS = [
   ['pact_inspect','Inspect PACT state','Read transaction and canonical state without mutation','inspect'],
@@ -16,6 +16,8 @@ const SAGA_DEFINITIONS = [
   ['pact_saga_execute','Execute cross-resource saga','Execute an approved saga with durable per-step recovery. Requires an idempotencyKey.','sagaExecute'],
   ['pact_saga_inspect','Inspect cross-resource saga','Read durable saga execution, compensation, and uncertainty state','sagaInspect'],
   ['pact_saga_reconcile','Reconcile uncertain saga','Resolve an uncertain provider outcome under the original approved capability. Requires the original idempotencyKey.','sagaReconcile'],
+  ['pact_saga_recovery_inspect','Inspect operator recovery evidence','Read the evidence-bound recovery snapshot for a saga that requires reconciliation','sagaRecoveryInspect'],
+  ['pact_saga_recovery_resolve','Resolve operator recovery','Submit human-approved recovery evidence bound to the exact observed recovery snapshot. Requires an idempotencyKey.','sagaRecoveryResolve'],
   ['pact_saga_get_receipt','Get saga receipt','Read the aggregate hash-bound terminal saga receipt','sagaReceipt']
 ];
 
@@ -56,7 +58,7 @@ export function createPactAgentToolCatalog({ connector }) {
     inputSchema: schemaFor(name),
     annotations: {
       readOnlyHint: READ_ONLY.has(name),
-      destructiveHint: name === 'pact_commit_transaction' || name === 'pact_saga_execute' || name === 'pact_saga_reconcile',
+      destructiveHint: name === 'pact_commit_transaction' || name === 'pact_saga_execute' || name === 'pact_saga_reconcile' || name === 'pact_saga_recovery_resolve',
       idempotentHint: CONSEQUENTIAL.has(name),
       openWorldHint: true
     }
