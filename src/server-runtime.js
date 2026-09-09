@@ -2,6 +2,7 @@ import { definePactAdapter } from './adapter.js';
 import { canonicalStringify } from './engine.js';
 import { createCanonicalStateRepository } from './canonical-store.js';
 import { createPactApiAuthorityService } from './api-authority.js';
+import { createPactSagaAuthorityService } from './saga-protocol.js';
 import { createPactHttpHandler } from './http-handler.js';
 import { createRedisAuthorityStore } from './redis-store.js';
 import { createHmacApprovalVerifier } from './server-approval.js';
@@ -71,13 +72,20 @@ function validateCanonicalBridge(canonical) {
   return canonical;
 }
 
+function validateSagaHandlers(handlers) {
+  if (handlers == null) return null;
+  if (!isPlainObject(handlers) || Object.keys(handlers).length < 1) fail('PACT_RUNTIME_SAGA_HANDLERS_REQUIRED');
+  return handlers;
+}
+
 export function createPactServerRuntime({
   store,
   approvalSecret,
   releaseSha,
   now = () => Date.now(),
   adapter: suppliedAdapter,
-  canonical: suppliedCanonical
+  canonical: suppliedCanonical,
+  sagaHandlers: suppliedSagaHandlers = null
 } = {}) {
   if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
     fail('PACT_RUNTIME_ATOMIC_STORE_REQUIRED');
@@ -101,7 +109,7 @@ export function createPactServerRuntime({
     : validateCanonicalBridge(suppliedCanonical);
 
   const verifyApproval = createHmacApprovalVerifier({ secret: approvalSecret, now });
-  const service = createPactApiAuthorityService({
+  const transactionService = createPactApiAuthorityService({
     store,
     verifyApproval,
     adapters: [adapter],
@@ -114,12 +122,21 @@ export function createPactServerRuntime({
     }),
     now
   });
+  const sagaHandlers = validateSagaHandlers(suppliedSagaHandlers);
+  const sagaService = sagaHandlers == null ? null : createPactSagaAuthorityService({
+    store,
+    verifyApproval,
+    handlers: sagaHandlers,
+    now
+  });
+  const service = sagaService == null ? transactionService : Object.freeze({ ...transactionService, ...sagaService });
   const handler = createPactHttpHandler({ service, releaseSha });
 
   return {
     adapter,
     canonical,
     service,
+    sagaService,
     handler,
     releaseSha
   };
