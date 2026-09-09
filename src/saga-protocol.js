@@ -2,6 +2,7 @@ import { sha256Hex } from './engine.js';
 import { createPactAuthority } from './authority.js';
 import { createPactSagaCoordinator } from './saga.js';
 import { buildSagaEvidenceChain } from './evidence-chain.js';
+import { createPactSagaTelemetry } from './saga-observability.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
@@ -173,7 +174,7 @@ function validateProtocolRecord(value) {
   return normalized;
 }
 
-function publicSaga(protocol, coordinatorRecord = null) {
+function publicSaga(protocol, coordinatorRecord = null, operational = null) {
   const coordinatorState = coordinatorRecord?.state;
   const visibleState = protocol.state === 'APPROVED' && coordinatorState === 'PLANNED'
     ? 'APPROVED'
@@ -192,6 +193,7 @@ function publicSaga(protocol, coordinatorRecord = null) {
   };
   if (coordinatorRecord?.updatedAt != null) out.updatedAt = coordinatorRecord.updatedAt;
   if (coordinatorRecord?.committedAt != null) out.committedAt = coordinatorRecord.committedAt;
+  if (operational != null) out.operational = clone(operational);
   return out;
 }
 
@@ -201,7 +203,9 @@ export function createPactSagaAuthorityService({
   handlers,
   now = () => Date.now(),
   capabilityTtlMs = 120_000,
-  prefix = 'pact:saga-protocol:'
+  prefix = 'pact:saga-protocol:',
+  telemetrySink = async () => {},
+  reconciliationSlaMs = 15 * 60_000
 } = {}) {
   assertStore(store);
   if (typeof verifyApproval !== 'function') fail('PACT_SAGA_PROTOCOL_APPROVAL_VERIFIER_REQUIRED');
@@ -209,8 +213,9 @@ export function createPactSagaAuthorityService({
   if (typeof globalThis.crypto?.randomUUID !== 'function') fail('PACT_SAGA_PROTOCOL_SECURE_RANDOM_REQUIRED');
   prefix = nonEmpty(prefix, 'PACT_SAGA_PROTOCOL_PREFIX_REQUIRED', 512);
 
+  const telemetry = createPactSagaTelemetry({ sink: telemetrySink, now, reconciliationSlaMs });
   const authority = createPactAuthority({ store, verifyApproval, now, ttlMs: capabilityTtlMs });
-  const coordinator = createPactSagaCoordinator({ store, handlers, now, prefix: `${prefix}execution:` });
+  const coordinator = createPactSagaCoordinator({ store, handlers, now, prefix: `${prefix}execution:`, telemetry });
   const keyFor = sagaId => `${prefix}plan:${sagaId}`;
 
   async function load(sagaId) {
@@ -273,8 +278,9 @@ export function createPactSagaAuthorityService({
         fail('PACT_SAGA_PROTOCOL_APPROVAL_REPLAY_UNBOUND');
       }
       if (record.approvalArtifactHash !== artifactHash) fail('PACT_SAGA_PROTOCOL_APPROVAL_REPLAY_CONFLICT');
+      const execution = await coordinator.inspect({ sagaId: record.id });
       return {
-        saga: publicSaga(record, await coordinator.inspect({ sagaId: record.id })),
+        saga: publicSaga(record, execution, telemetry.deriveOperationalStatus(execution)),
         capability: { token: record.capabilityToken, expiresAt: record.capabilityExpiresAt, claims: clone(record.approvalClaims) },
         idempotentReplay: true
       };
@@ -305,8 +311,16 @@ export function createPactSagaAuthorityService({
       next.capabilityExpiresAt = capability.expiresAt;
       next.approvalBinding = approvalBinding;
     });
+    await telemetry.emit({
+      type: 'SAGA_APPROVED',
+      sagaId: record.id,
+      planHash: record.planHash,
+      humanPrincipal: capability.claims?.humanPrincipal ?? null,
+      agentSession: capability.claims?.agentSession ?? null
+    });
+    const execution = await coordinator.inspect({ sagaId: record.id });
     return {
-      saga: publicSaga(record, await coordinator.inspect({ sagaId: record.id })),
+      saga: publicSaga(record, execution, telemetry.deriveOperationalStatus(execution)),
       capability: clone(capability),
       idempotentReplay: false
     };
@@ -340,6 +354,14 @@ export function createPactSagaAuthorityService({
       next.executionAuthorization = clone(authorization);
       next.executionAuthorizedAt = authorization.authorizedAt;
     });
+    await telemetry.emit({
+      type: 'SAGA_EXECUTION_AUTHORIZED',
+      sagaId: record.id,
+      planHash: record.planHash,
+      authorizationId: authorization.authorizationId,
+      humanPrincipal: authorization.claims?.humanPrincipal ?? record.approvalClaims?.humanPrincipal ?? null,
+      agentSession: authorization.claims?.agentSession ?? record.approvalClaims?.agentSession ?? null
+    });
     return { record, authorization };
   }
 
@@ -351,14 +373,18 @@ export function createPactSagaAuthorityService({
     record = authorized.record;
     const before = await coordinator.inspect({ sagaId: record.id });
     const result = await coordinator.execute({ sagaId: record.id });
-    return { saga: publicSaga(record, result), idempotentReplay: authorized.authorization.idempotentReplay || TERMINAL.has(before.state) };
+    return {
+      saga: publicSaga(record, result, telemetry.deriveOperationalStatus(result)),
+      idempotentReplay: authorized.authorization.idempotentReplay || TERMINAL.has(before.state)
+    };
   }
 
   async function sagaInspect({ sagaId } = {}) {
     const record = await load(sagaId);
     if (!record) fail('PACT_SAGA_PROTOCOL_NOT_FOUND');
     if (record.state === 'PREVIEWED') return { saga: publicSaga(record) };
-    return { saga: publicSaga(record, await coordinator.inspect({ sagaId: record.id })) };
+    const execution = await coordinator.inspect({ sagaId: record.id });
+    return { saga: publicSaga(record, execution, telemetry.deriveOperationalStatus(execution)) };
   }
 
   async function sagaReconcile({ sagaId, capabilityToken, idempotencyKey } = {}) {
@@ -367,7 +393,7 @@ export function createPactSagaAuthorityService({
     if (record.state !== 'APPROVED') fail('PACT_SAGA_PROTOCOL_NOT_APPROVED');
     ({ record } = await authorizeExecution(record, capabilityToken, idempotencyKey));
     const result = await coordinator.reconcile({ sagaId: record.id });
-    return { saga: publicSaga(record, result) };
+    return { saga: publicSaga(record, result, telemetry.deriveOperationalStatus(result)) };
   }
 
   async function buildRecovery(record) {
@@ -417,6 +443,7 @@ export function createPactSagaAuthorityService({
       failure: clone(execution.failure ?? null),
       leaseGeneration: execution.leaseGeneration ?? 0,
       providerEvidence,
+      operational: telemetry.deriveOperationalStatus(execution),
       allowedActions: ['reconcile']
     };
     const recoveryHash = await sha256Hex({ namespace: 'pact-saga-recovery-v1', sagaId: record.id, planHash: record.planHash, recovery });
@@ -448,7 +475,11 @@ export function createPactSagaAuthorityService({
       if (decision.decisionHash !== decisionHash) fail('PACT_SAGA_PROTOCOL_RECOVERY_REPLAY_CONFLICT');
       if (decision.status === 'COMPLETED') {
         const execution = await coordinator.inspect({ sagaId: record.id });
-        return { saga: publicSaga(record, execution), recoveryDecision: clone(decision), idempotentReplay: true };
+        return {
+          saga: publicSaga(record, execution, telemetry.deriveOperationalStatus(execution)),
+          recoveryDecision: clone(decision),
+          idempotentReplay: true
+        };
       }
       if (decision.status !== 'PENDING') fail('PACT_SAGA_PROTOCOL_CORRUPT_RECOVERY_DECISION');
     } else {
@@ -479,6 +510,15 @@ export function createPactSagaAuthorityService({
         resolutionReceiptHash: null
       };
       record = await persist(record, next => { next.recoveryDecisions.push(clone(decision)); });
+      await telemetry.emit({
+        type: 'SAGA_OPERATOR_RECOVERY_AUTHORIZED',
+        sagaId: record.id,
+        recoveryHash,
+        action,
+        humanPrincipal: claims.humanPrincipal,
+        agentSession: claims.agentSession,
+        decisionHash
+      });
     }
 
     let execution = await coordinator.inspect({ sagaId: record.id });
@@ -515,7 +555,20 @@ export function createPactSagaAuthorityService({
       };
     });
     decision = record.recoveryDecisions.find(candidate => candidate.idempotencyKey === idempotencyKey);
-    return { saga: publicSaga(record, execution), recoveryDecision: clone(decision), idempotentReplay: false };
+    await telemetry.emit({
+      type: 'SAGA_OPERATOR_RECOVERY_RESOLVED',
+      sagaId: record.id,
+      recoveryHash,
+      action,
+      decisionHash,
+      resultState: execution.state,
+      resolutionReceiptHash
+    });
+    return {
+      saga: publicSaga(record, execution, telemetry.deriveOperationalStatus(execution)),
+      recoveryDecision: clone(decision),
+      idempotentReplay: false
+    };
   }
 
   async function sagaReceipt({ sagaId } = {}) {
