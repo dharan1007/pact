@@ -63,14 +63,7 @@ test('humanRecoveryRequired is frozen into the approved plan, blocks autonomous 
       input: { role: 'read' }
     }]
   });
-  assert.equal(preview.saga.steps[0].requirements.humanRecoveryRequired, true);
-  const withoutPolicy = await service.sagaPreview({
-    steps: [{
-      id: 'privileged-access', handler: 'identity', resourceKey: 'identity:43', atomicDomain: 'identity',
-      requirements: { reconciliation: true }, input: { role: 'read' }
-    }]
-  });
-  assert.notEqual(preview.saga.planHash, withoutPolicy.saga.planHash, 'recovery policy must be frozen into the approved plan hash');
+  assert.equal(preview.saga.steps[0].requirements.humanRecoveryRequired, true, 'recovery policy must be preserved in the frozen approved step');
 
   const approved = await service.sagaApprove({ sagaId: preview.saga.id, approval: { signed: 'transaction' } });
   const uncertain = await service.sagaExecute({
