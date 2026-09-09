@@ -8,6 +8,7 @@ import { createRedisAuthorityStore } from './redis-store.js';
 import { createHmacApprovalVerifier } from './server-approval.js';
 import { resolveReleaseSha } from './provenance.js';
 import { createPactRestResourceBridge, createPactJsonResourceAdapter } from './rest-resource.js';
+import { createPactProviderRegistry, parsePactProviderRegistryConfig } from './provider-registry.js';
 
 const fail = code => { throw new Error(code); };
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -159,6 +160,20 @@ export function createPactServerRuntimeFromEnv({ env = process.env, fetchImpl = 
   if (mode === 'generic') {
     return createPactServerRuntime({ store, approvalSecret, releaseSha, now });
   }
+
+  if (mode === 'provider-registry') {
+    const config = parsePactProviderRegistryConfig(env?.PACT_PROVIDER_REGISTRY_JSON);
+    const registry = createPactProviderRegistry({ store, config, env, fetchImpl });
+    const runtime = createPactServerRuntime({
+      store,
+      approvalSecret,
+      releaseSha,
+      now,
+      sagaHandlers: registry.handlers
+    });
+    return Object.freeze({ ...runtime, providerRegistry: registry.providers });
+  }
+
   if (mode !== 'rest-json') fail('PACT_RUNTIME_MODE_UNSUPPORTED');
 
   const baseUrl = nonEmpty(env?.PACT_REST_BASE_URL, 'PACT_RUNTIME_REST_BASE_URL_REQUIRED');
