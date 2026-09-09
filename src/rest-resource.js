@@ -4,6 +4,7 @@ import { definePactAdapter } from './adapter.js';
 const clone = value => value === undefined ? undefined : structuredClone(value);
 const fail = code => { throw new Error(code); };
 const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+const MAX_OPERATIONS = 256;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -133,6 +134,51 @@ function validatePath(path) {
 
 function getPath(object, segments) {
   return segments.reduce((node, key) => node?.[key], object);
+}
+
+function operationPathKey(path) {
+  return path.join('\u0000');
+}
+
+function pathsOverlap(left, right) {
+  const shortest = Math.min(left.length, right.length);
+  for (let index = 0; index < shortest; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function normalizeResourceOperations(intent) {
+  if (!isPlainObject(intent)) fail('PACT_REST_INVALID_RESOURCE_INTENT');
+  const hasLegacyPath = Object.prototype.hasOwnProperty.call(intent, 'path');
+  const hasLegacyValue = Object.prototype.hasOwnProperty.call(intent, 'value');
+  const hasOperations = Object.prototype.hasOwnProperty.call(intent, 'operations');
+
+  if (hasOperations && (hasLegacyPath || hasLegacyValue)) fail('PACT_REST_AMBIGUOUS_RESOURCE_INTENT');
+
+  const rawOperations = hasOperations
+    ? intent.operations
+    : [{ path: intent.path, ...(hasLegacyValue ? { value: intent.value } : {}) }];
+
+  if (!Array.isArray(rawOperations) || rawOperations.length < 1) fail('PACT_REST_OPERATIONS_REQUIRED');
+  if (rawOperations.length > MAX_OPERATIONS) fail('PACT_REST_TOO_MANY_OPERATIONS');
+
+  const normalized = [];
+  const seen = new Set();
+  for (const operation of rawOperations) {
+    if (!isPlainObject(operation)) fail('PACT_REST_INVALID_OPERATION');
+    const path = validatePath(operation.path);
+    if (!Object.prototype.hasOwnProperty.call(operation, 'value')) fail('PACT_REST_VALUE_REQUIRED');
+    assertJson(operation.value, 'PACT_REST_VALUE_MUST_BE_JSON');
+    const pathKey = operationPathKey(path);
+    if (seen.has(pathKey)) fail('PACT_REST_DUPLICATE_OPERATION_PATH');
+    for (const prior of normalized) {
+      if (pathsOverlap(prior.path, path)) fail('PACT_REST_OVERLAPPING_OPERATION_PATH');
+    }
+    seen.add(pathKey);
+    normalized.push({ path, value: clone(operation.value) });
+  }
+  return normalized;
 }
 
 function assertStore(store) {
@@ -303,26 +349,42 @@ export function createPactJsonResourceAdapter({ id, version = '1.0.0' } = {}) {
     describe() {
       return {
         name: 'PACT JSON resource adapter',
-        intent: { type: 'object', required: ['path', 'value'] },
-        state: { type: 'object', required: ['version', 'resource'] }
+        intent: {
+          type: 'object',
+          oneOf: [
+            { required: ['path', 'value'] },
+            { required: ['operations'] }
+          ]
+        },
+        state: { type: 'object', required: ['version', 'resource'] },
+        capabilities: {
+          atomicMultiField: true,
+          maxOperations: MAX_OPERATIONS,
+          operation: 'json-path-replace'
+        }
       };
     },
     async plan({ intent, state }) {
-      if (!isPlainObject(intent) || !isPlainObject(state) || !isPlainObject(state.resource)) fail('PACT_REST_INVALID_RESOURCE_INTENT');
-      const path = validatePath(intent.path);
-      if (!Object.prototype.hasOwnProperty.call(intent, 'value')) fail('PACT_REST_VALUE_REQUIRED');
-      assertJson(intent.value, 'PACT_REST_VALUE_MUST_BE_JSON');
+      if (!isPlainObject(state) || !isPlainObject(state.resource)) fail('PACT_REST_INVALID_RESOURCE_INTENT');
+      const operations = normalizeResourceOperations(intent);
+      const effects = operations.map(operation => ({
+        path: `resource.${operation.path.join('.')}`,
+        before: clone(getPath(state.resource, operation.path)),
+        after: clone(operation.value)
+      }));
       return {
-        effects: [{ path: `resource.${path.join('.')}`, before: clone(getPath(state.resource, path)), after: clone(intent.value) }],
+        effects,
         invariants: [],
-        metadata: { adapter: id, semantics: 'json-path-replace' }
+        metadata: operations.length === 1 && !Object.prototype.hasOwnProperty.call(intent, 'operations')
+          ? { adapter: id, semantics: 'json-path-replace' }
+          : { adapter: id, semantics: 'json-path-batch-replace', operationCount: operations.length }
       };
     },
     async verify({ intent, state }) {
-      if (!isPlainObject(intent) || !isPlainObject(state) || !isPlainObject(state.resource) || !Object.prototype.hasOwnProperty.call(intent, 'value')) return false;
-      let path;
-      try { path = validatePath(intent.path); } catch { return false; }
-      return same(getPath(state.resource, path), intent.value);
+      if (!isPlainObject(state) || !isPlainObject(state.resource)) return false;
+      let operations;
+      try { operations = normalizeResourceOperations(intent); } catch { return false; }
+      return operations.every(operation => same(getPath(state.resource, operation.path), operation.value));
     }
   });
 }
