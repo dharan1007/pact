@@ -1,6 +1,7 @@
 const ACTIONS = new Set([
   'preview', 'approve', 'commit', 'verify', 'receipt', 'inspect',
-  'saga_preview', 'saga_approve', 'saga_execute', 'saga_inspect', 'saga_reconcile', 'saga_receipt'
+  'saga_preview', 'saga_approve', 'saga_execute', 'saga_inspect', 'saga_reconcile', 'saga_receipt',
+  'saga_recovery_inspect', 'saga_recovery_resolve'
 ]);
 const SERVICE_METHODS = Object.freeze({
   saga_preview: 'sagaPreview',
@@ -8,7 +9,9 @@ const SERVICE_METHODS = Object.freeze({
   saga_execute: 'sagaExecute',
   saga_inspect: 'sagaInspect',
   saga_reconcile: 'sagaReconcile',
-  saga_receipt: 'sagaReceipt'
+  saga_receipt: 'sagaReceipt',
+  saga_recovery_inspect: 'sagaRecoveryInspect',
+  saga_recovery_resolve: 'sagaRecoveryResolve'
 });
 
 function writeJson(res, statusCode, body) {
@@ -34,10 +37,10 @@ function protocolStatus(code) {
   if (code === 'PACT_API_TRANSACTION_NOT_FOUND' || code === 'PACT_SAGA_PROTOCOL_NOT_FOUND' || code === 'PACT_SAGA_NOT_FOUND') return 404;
   if (code === 'PACT_REST_COMMIT_UNCERTAIN') return 503;
   if (code === 'PACT_REST_PROVIDER_READ_FAILED' || code.startsWith('PACT_REST_PROVIDER_HTTP_') || code === 'PACT_REST_PROVIDER_POSTCONDITION_FAILED' || code === 'PACT_REST_INVALID_PROVIDER_RESPONSE' || code === 'PACT_REST_ETAG_REQUIRED' || code === 'PACT_REST_ETAG_REUSED_FOR_DIFFERENT_STATE') return 502;
-  if (code.includes('STALE_') || code.includes('CONFLICT') || code.includes('ALREADY_CONSUMED') || code.includes('CONTENTION') || code.includes('CONCURRENT_MODIFICATION')) return 409;
+  if (code.includes('STALE_') || code.includes('STALE') || code.includes('CONFLICT') || code.includes('ALREADY_CONSUMED') || code.includes('CONTENTION') || code.includes('CONCURRENT_MODIFICATION')) return 409;
   if (code.includes('EXPIRED')) return 410;
-  if (code.includes('NOT_APPROVED') || code.includes('NOT_PREVIEWED') || code.includes('NOT_COMMITTED') || code.includes('NOT_EXECUTABLE') || code.includes('RECEIPT_NOT_AVAILABLE') || code.includes('RECONCILIATION_NOT_REQUIRED')) return 409;
-  if (code.includes('APPROVAL_REJECTED') || code.includes('CAPABILITY_') || code.includes('BINDING_MISMATCH')) return 403;
+  if (code.includes('NOT_APPROVED') || code.includes('NOT_PREVIEWED') || code.includes('NOT_COMMITTED') || code.includes('NOT_EXECUTABLE') || code.includes('RECEIPT_NOT_AVAILABLE') || code.includes('RECONCILIATION_NOT_REQUIRED') || code.includes('RECOVERY_NOT_REQUIRED') || code.includes('STATE_CHANGED')) return 409;
+  if (code.includes('APPROVAL_REJECTED') || code.includes('CAPABILITY_') || code.includes('BINDING_MISMATCH') || code.includes('INVALID_PRINCIPAL') || code.includes('INVALID_AGENT_SESSION')) return 403;
   return 400;
 }
 
@@ -73,7 +76,7 @@ function parseEnvelope(body) {
 }
 
 function bindIdempotency(req, action, payload) {
-  if (action !== 'commit' && action !== 'saga_execute' && action !== 'saga_reconcile') return payload;
+  if (action !== 'commit' && action !== 'saga_execute' && action !== 'saga_reconcile' && action !== 'saga_recovery_resolve') return payload;
   const raw = requestHeader(req, 'idempotency-key');
   if (raw == null || String(raw).trim() === '') return payload;
   const headerKey = String(raw).trim();
