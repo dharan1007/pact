@@ -91,6 +91,60 @@ test('production smoke executes preview approve commit verify receipt with a bou
   assert.equal(result.commitVersion, 8);
 });
 
+test('smoke config defaults to the shipped generic runtime without requiring provider env', async () => {
+  const { resolveSmokeConfig } = await import('../src/production-smoke.js');
+  assert.deepEqual(resolveSmokeConfig({}), {
+    mode: 'generic',
+    adapter: { id: 'pact.generic', version: '1.0.0' },
+    intent: { value: { smoke: 'pact-production-smoke' } }
+  });
+  assert.deepEqual(resolveSmokeConfig({ PACT_RUNTIME_MODE: 'generic' }).adapter, {
+    id: 'pact.generic',
+    version: '1.0.0'
+  });
+});
+
+test('smoke config honors an explicit generic intent and the rest-json provider contract', async () => {
+  const { resolveSmokeConfig } = await import('../src/production-smoke.js');
+  assert.deepEqual(
+    resolveSmokeConfig({ PACT_SMOKE_INTENT_JSON: '{"value":{"smoke":"custom"}}' }).intent,
+    { value: { smoke: 'custom' } }
+  );
+  assert.deepEqual(
+    resolveSmokeConfig({
+      PACT_RUNTIME_MODE: 'rest-json',
+      PACT_REST_ADAPTER_ID: 'provider.account',
+      PACT_SMOKE_INTENT_JSON: '{"path":["verification","nonce"],"value":"release-123"}'
+    }),
+    {
+      mode: 'rest-json',
+      adapter: { id: 'provider.account', version: '1.0.0' },
+      intent: { path: ['verification', 'nonce'], value: 'release-123' }
+    }
+  );
+});
+
+test('smoke config fails closed on unknown modes and malformed provider env', async () => {
+  const { resolveSmokeConfig } = await import('../src/production-smoke.js');
+  assert.throws(() => resolveSmokeConfig({ PACT_RUNTIME_MODE: 'direct' }), /PACT_SMOKE_RUNTIME_MODE_UNSUPPORTED/);
+  assert.throws(
+    () => resolveSmokeConfig({ PACT_RUNTIME_MODE: 'rest-json', PACT_SMOKE_INTENT_JSON: '{}' }),
+    /PACT_SMOKE_ENV_REQUIRED:PACT_REST_ADAPTER_ID/
+  );
+  assert.throws(
+    () => resolveSmokeConfig({
+      PACT_RUNTIME_MODE: 'rest-json',
+      PACT_REST_ADAPTER_ID: 'provider.account',
+      PACT_SMOKE_INTENT_JSON: 'not-json'
+    }),
+    /PACT_SMOKE_INTENT_JSON_INVALID/
+  );
+  assert.throws(
+    () => resolveSmokeConfig({ PACT_SMOKE_INTENT_JSON: '[1,2]' }),
+    /PACT_SMOKE_INTENT_JSON_INVALID/
+  );
+});
+
 test('production smoke fails closed on weak secrets and receipt mismatch', async () => {
   const { runProductionTransactionSmoke } = await import('../src/production-smoke.js');
   await assert.rejects(() => runProductionTransactionSmoke({
