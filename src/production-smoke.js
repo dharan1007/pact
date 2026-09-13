@@ -12,6 +12,41 @@ function nonEmpty(value, code, max = 512) {
   return normalized;
 }
 
+function requiredEnv(env, name) {
+  const value = env?.[name];
+  if (typeof value !== 'string' || value.trim() === '') fail(`PACT_SMOKE_ENV_REQUIRED:${name}`);
+  return value.trim();
+}
+
+function parseIntentJson(value) {
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { throw new Error('PACT_SMOKE_INTENT_JSON_INVALID'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('PACT_SMOKE_INTENT_JSON_INVALID');
+  return parsed;
+}
+
+export function resolveSmokeConfig(env = process.env) {
+  const mode = requiredEnv({ PACT_RUNTIME_MODE: env?.PACT_RUNTIME_MODE ?? 'generic' }, 'PACT_RUNTIME_MODE');
+  if (mode !== 'generic' && mode !== 'rest-json') fail('PACT_SMOKE_RUNTIME_MODE_UNSUPPORTED');
+  if (mode === 'rest-json') {
+    return {
+      mode,
+      adapter: {
+        id: requiredEnv(env, 'PACT_REST_ADAPTER_ID'),
+        version: env?.PACT_REST_ADAPTER_VERSION?.trim() || '1.0.0'
+      },
+      intent: parseIntentJson(requiredEnv(env, 'PACT_SMOKE_INTENT_JSON'))
+    };
+  }
+  const rawIntent = env?.PACT_SMOKE_INTENT_JSON;
+  return {
+    mode,
+    adapter: { id: 'pact.generic', version: '1.0.0' },
+    intent: typeof rawIntent === 'string' && rawIntent.trim() !== ''
+      ? parseIntentJson(rawIntent)
+      : { value: { smoke: 'pact-production-smoke' } }
+  };
+}
 function validateAdapter(adapter) {
   if (!isPlainObject(adapter)) fail('PACT_SMOKE_ADAPTER_REQUIRED');
   return {
