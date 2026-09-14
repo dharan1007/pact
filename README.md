@@ -1,4 +1,11 @@
-# PACT — Transactional WebMCP
+# PACT — Agent Release Integrity
+
+PACT is the release-integrity control plane for production AI agents: CAPTURE what
+is running, COMPARE what changed, PROVE it behaves acceptably, CONTROL what
+reaches production. Its transaction engine (preview → approval → one-shot commit
+→ canonical verification → receipt) is the CONTROL subsystem that also recovers
+external effects when a bad release escapes. See [`docs/release-integrity.md`](docs/release-integrity.md)
+for the implemented surface and the explicit not-built list.
 
 PACT is an experimental trust and transaction layer for consequential agent actions. It binds a human-approved semantic plan to canonical state, commits under short-lived authority, verifies the resulting state, and emits a tamper-evident receipt. The same authority can sit behind ordinary HTTPS clients, MCP hosts, or browser WebMCP tools.
 
@@ -20,6 +27,13 @@ PACT is an experimental trust and transaction layer for consequential agent acti
 - `src/playground.js` + `/workspace/` — canonical HTTP playground showing request, plan, approval, commit, verification, receipt, errors and durable recovery by transaction ID.
 - `pact-manifest.json` + `schema/pact-manifest.schema.json` — machine-readable product, WebMCP and agent-bridge contract checked against its schema by CI.
 - `src/provenance.js` + `scripts/build.mjs` — deterministic release provenance and integrity hashing.
+- `src/release-lock.js` + `schema/pact-lock.schema.json` — immutable content-hash `pact.lock` release identity (CAPTURE).
+- `src/release-diff.js` — structural release diff with deterministic severities (COMPARE).
+- `src/release-registry.js` — CAS-backed immutable lock registry with pin/get/history.
+- `src/release-drift.js` — pinned-vs-observed drift evaluation for undeployed change.
+- `src/release-gate.js` — deterministic ALLOW/WARN/BLOCK release gate under explicit policy.
+- `src/release-attribution.js` — exact changed-dependency attribution without probabilities.
+- `scripts/pact-release.mjs` (`npm run release`) — `capture`/`diff`/`drift`/`gate` CLI for CI.
 
 PACT therefore contains a real server-side transaction plane rather than only a browser simulation. The default `generic` runtime remains useful for the playground and integration testing. For real systems, use a domain adapter and canonical bridge; the shipped `rest-json` mode is the first production-oriented bridge for JSON REST resources.
 

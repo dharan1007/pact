@@ -32,7 +32,7 @@ test('workspace uses the canonical HTTP playground while demo keeps the referenc
 test('release ships generic runtime, canonical API authority, durable state, real provider bridge, saga evidence, agent bridges and atomic stores with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'evidence-chain.js', 'provider-registry.js', 'rest-resource.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'evidence-chain.js', 'provider-registry.js', 'rest-resource.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   assert.equal(existsSync(path.join(root, 'api', 'pact.js')), true, 'missing Vercel /api/pact entrypoint');
