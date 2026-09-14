@@ -12,10 +12,16 @@ const safeVersion = value => {
 };
 const validateClaims = value => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('PACT_AUTHORITY_APPROVAL_REJECTED');
-  return {
+  const claims = {
     humanPrincipal: nonEmpty(value.humanPrincipal, 'PACT_AUTHORITY_INVALID_PRINCIPAL'),
     agentSession: nonEmpty(value.agentSession, 'PACT_AUTHORITY_INVALID_AGENT_SESSION')
   };
+  if (value.releaseId != null) {
+    const releaseId = nonEmpty(value.releaseId, 'PACT_AUTHORITY_INVALID_RELEASE');
+    if (!/^pact_[a-f0-9]{64}$/.test(releaseId)) fail('PACT_AUTHORITY_INVALID_RELEASE');
+    claims.releaseId = releaseId;
+  }
+  return claims;
 };
 
 export class MemoryAuthorityStore {

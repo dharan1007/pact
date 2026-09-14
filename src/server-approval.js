@@ -24,6 +24,11 @@ export function createHmacApprovalVerifier({ secret, now = () => Date.now(), max
     const agentSession = nonEmpty(approval.agentSession);
     const nonce = nonEmpty(approval.nonce);
     if (!humanPrincipal || !agentSession || !nonce) return false;
+    let releaseId = null;
+    if (approval.releaseId != null) {
+      releaseId = nonEmpty(approval.releaseId);
+      if (!releaseId || !/^pact_[a-f0-9]{64}$/.test(releaseId)) return false;
+    }
     if (!Number.isSafeInteger(approval.expiresAt)) return false;
 
     const currentTime = now();
@@ -39,6 +44,7 @@ export function createHmacApprovalVerifier({ secret, now = () => Date.now(), max
       expiresAt: approval.expiresAt,
       nonce
     };
+    if (releaseId) claims.releaseId = releaseId;
     let message;
     try {
       message = canonicalStringify({ txId, planHash, baseVersion, adapter, claims });
@@ -49,6 +55,8 @@ export function createHmacApprovalVerifier({ secret, now = () => Date.now(), max
 
     const expected = createHmac('sha256', secret).update(message).digest();
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return false;
-    return { humanPrincipal, agentSession };
+    const verified = { humanPrincipal, agentSession };
+    if (releaseId) verified.releaseId = releaseId;
+    return verified;
   };
 }

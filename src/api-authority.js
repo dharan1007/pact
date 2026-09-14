@@ -138,8 +138,12 @@ export function createPactApiAuthorityService({
     return adapter;
   }
 
-  async function preview({ adapter: descriptor, intent } = {}) {
+  async function preview({ adapter: descriptor, intent, releaseId = null } = {}) {
     assertJson(intent, 'PACT_API_INTENT_MUST_BE_JSON');
+    if (releaseId != null) {
+      releaseId = nonEmpty(releaseId, 'PACT_API_RELEASE_ID_REQUIRED');
+      if (!/^pact_[a-f0-9]{64}$/.test(releaseId)) fail('PACT_API_RELEASE_ID_INVALID');
+    }
     const adapter = resolveAdapter(descriptor);
     const canonical = assertCanonical(await readCanonical({ adapter: { id: adapter.id, version: adapter.version }, intent: clone(intent) }));
     const id = `tx_${globalThis.crypto.randomUUID()}`;
@@ -165,6 +169,7 @@ export function createPactApiAuthorityService({
       metadata: clone(plan.metadata),
       createdAt: now()
     };
+    if (releaseId) transaction.releaseId = releaseId;
     transaction.planHash = await sha256Hex({
       txId: id,
       adapter: transaction.adapter,
@@ -348,6 +353,7 @@ export function createPactApiAuthorityService({
       }
     });
     if (!verified) fail('PACT_API_ADAPTER_VERIFICATION_FAILED');
+    const releaseBinding = transaction.releaseId ?? transaction.approvalClaims?.releaseId ?? null;
     const body = {
       txId: transaction.id,
       adapter: clone(transaction.adapter),
@@ -360,6 +366,7 @@ export function createPactApiAuthorityService({
       invariants: clone(transaction.invariants),
       verifiedAt: now()
     };
+    if (releaseBinding) body.releaseId = releaseBinding;
     const receipt = { ...body, receiptHash: await sha256Hex(body) };
     const verifiedTransition = await durable.transition({
       txId: transaction.id,

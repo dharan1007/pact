@@ -32,7 +32,7 @@ test('workspace uses the canonical HTTP playground while demo keeps the referenc
 test('release ships generic runtime, canonical API authority, durable state, real provider bridge, saga evidence, agent bridges and atomic stores with manifest discovery', () => {
   const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr || run.stdout);
-  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'evidence-chain.js', 'provider-registry.js', 'rest-resource.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js']) {
+  for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'evidence-chain.js', 'provider-registry.js', 'rest-resource.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'release-discover.js', 'trace-corpus.js', 'replay.js', 'release-bisect.js', 'release-canary.js', 'release-effects.js', 'release-recovery.js', 'fleet-graph.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js']) {
     assert.equal(existsSync(path.join(root, 'dist/sdk', file)), true, `missing SDK module ${file}`);
   }
   assert.equal(existsSync(path.join(root, 'api', 'pact.js')), true, 'missing Vercel /api/pact entrypoint');
@@ -109,4 +109,17 @@ test('identical source produces an identical release manifest', () => {
   assert.equal(second.status, 0, second.stderr || second.stdout);
   const manifestB = readFileSync(path.join(root,'dist/release-manifest.json'),'utf8');
   assert.equal(manifestB, manifestA);
+});
+
+test('release ships a version-pinned zero-dependency SBOM covered by the integrity manifest', () => {
+  const run = spawnSync(process.execPath, ['scripts/build.mjs'], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const sbom = JSON.parse(readFileSync(path.join(root, 'dist/sbom.cdx.json'), 'utf8'));
+  assert.equal(sbom.bomFormat, 'CycloneDX');
+  assert.equal(sbom.metadata.component.name, pkg.name);
+  assert.equal(sbom.metadata.component.version, pkg.version);
+  assert.deepEqual(sbom.components, []);
+  const manifest = JSON.parse(readFileSync(path.join(root, 'dist/release-manifest.json'), 'utf8'));
+  assert.match(manifest.files['sbom.cdx.json'], /^[a-f0-9]{64}$/);
 });
