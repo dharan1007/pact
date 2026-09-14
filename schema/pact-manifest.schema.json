@@ -4,7 +4,7 @@
   "title": "PACT Product Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "integrations", "agentBridges", "provenance", "referenceRuntime", "security", "documentation"],
+  "required": ["schemaVersion", "name", "kind", "status", "webmcp", "http", "adapterContract", "runtime", "authority", "durability", "integrations", "agentBridges", "provenance", "releaseIntegrity", "referenceRuntime", "security", "documentation"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0" },
@@ -139,6 +139,23 @@
         "endpoint": { "const": "/release-provenance.json" },
         "integrityManifest": { "const": "/release-manifest.json" },
         "sourceRepository": { "const": "https://github.com/dharan1007/pact" }
+      }
+    },
+    "releaseIntegrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lockModule", "lockSchema", "diffModule", "registryModule", "driftModule", "gateModule", "attributionModule", "cli", "identityModel", "decisions"],
+      "properties": {
+        "lockModule": { "const": "./sdk/release-lock.js" },
+        "lockSchema": { "const": "./schema/pact-lock.schema.json" },
+        "diffModule": { "const": "./sdk/release-diff.js" },
+        "registryModule": { "const": "./sdk/release-registry.js" },
+        "driftModule": { "const": "./sdk/release-drift.js" },
+        "gateModule": { "const": "./sdk/release-gate.js" },
+        "attributionModule": { "const": "./sdk/release-attribution.js" },
+        "cli": { "const": "scripts/pact-release.mjs" },
+        "identityModel": { "const": "content-hash-lockfile" },
+        "decisions": { "type": "array", "prefixItems": [{"const":"ALLOW"},{"const":"WARN"},{"const":"BLOCK"}], "minItems": 3, "maxItems": 3 }
       }
     },
     "referenceRuntime": {

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pact-webmcp.vercel.app/schema/pact-lock.schema.json",
+  "title": "PACT Agent Release Lock (pact.lock)",
+  "description": "Immutable content-hash identity for one agent release in one environment. Consumers must recompute section hashes and the release id; any mismatch fails closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lockVersion", "agent", "environment", "capturedAt", "sections", "releaseId"],
+  "properties": {
+    "lockVersion": { "const": 1 },
+    "agent": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "environment": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "capturedAt": { "type": "integer", "minimum": 0 },
+    "sections": {
+      "type": "object",
+      "propertyNames": { "enum": ["source", "model", "prompts", "skills", "tools", "mcp", "retrieval", "memory", "permissions", "evals", "runtime"] },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hash", "content"],
+        "properties": {
+          "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+          "content": true
+        }
+      }
+    },
+    "releaseId": { "type": "string", "pattern": "^pact_[a-f0-9]{64}$" }
+  }
+}

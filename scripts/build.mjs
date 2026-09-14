@@ -33,7 +33,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'saga-observability.js', 'evidence-chain.js', 'rest-resource.js', 'provider-registry.js', 'provider-qualification.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'saga-observability.js', 'evidence-chain.js', 'rest-resource.js', 'provider-registry.js', 'provider-qualification.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
@@ -73,11 +73,11 @@ for (const route of routes) {
 }
 for (const file of ['vercel.json', 'README.md', 'LICENSE', 'pact-manifest.json']) await cp(path.join(root, file), path.join(dist, file));
 await mkdir(path.join(dist, 'schema'), { recursive: true });
-for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json']) {
+for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json', 'pact-lock.schema.json']) {
   await cp(path.join(root, `schema/${file}`), path.join(dist, `schema/${file}`));
 }
 await mkdir(path.join(dist, 'docs'), { recursive: true });
-for (const file of ['agent-bridges.md', 'rest-provider.md']) {
+for (const file of ['agent-bridges.md', 'rest-provider.md', 'release-integrity.md']) {
   await cp(path.join(root, `docs/${file}`), path.join(dist, `docs/${file}`));
 }
 

@@ -89,6 +89,18 @@
     "integrityManifest": "/release-manifest.json",
     "sourceRepository": "https://github.com/dharan1007/pact"
   },
+  "releaseIntegrity": {
+    "lockModule": "./sdk/release-lock.js",
+    "lockSchema": "./schema/pact-lock.schema.json",
+    "diffModule": "./sdk/release-diff.js",
+    "registryModule": "./sdk/release-registry.js",
+    "driftModule": "./sdk/release-drift.js",
+    "gateModule": "./sdk/release-gate.js",
+    "attributionModule": "./sdk/release-attribution.js",
+    "cli": "scripts/pact-release.mjs",
+    "identityModel": "content-hash-lockfile",
+    "decisions": ["ALLOW", "WARN", "BLOCK"]
+  },
   "referenceRuntime": {
     "module": "./engine.bundle.js",
     "scope": "reference-domain-only",
