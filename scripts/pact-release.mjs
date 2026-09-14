@@ -3,13 +3,25 @@ import { createReleaseLock } from '../src/release-lock.js';
 import { diffReleaseLocks } from '../src/release-diff.js';
 import { evaluateDrift } from '../src/release-drift.js';
 import { evaluateGate } from '../src/release-gate.js';
+import {
+  discoverGit,
+  discoverPackage,
+  discoverMcpServer,
+  discoverOpenaiModel,
+  discoverAnthropicModel,
+  composeDescriptor
+} from '../src/release-discover.js';
 
 const fail = code => { throw new Error(code); };
 
 const COMMANDS = {
   capture: {
-    usage: 'capture --descriptor <file> [--now <ms>]',
+    usage: 'capture --descriptor <file|-> [--now <ms>]',
     flags: ['--descriptor', '--now']
+  },
+  discover: {
+    usage: 'discover --agent <name> --environment <env> [--git] [--package-root <dir>] [--mcp <url>]... [--openai-model <id>] [--anthropic-model <id>]',
+    flags: ['--agent', '--environment', '--git', '--package-root', '--mcp', '--openai-model', '--anthropic-model']
   },
   diff: {
     usage: 'diff --before <lock-file> --after <lock-file>',
@@ -32,6 +44,10 @@ function usage() {
   return lines.join('\n');
 }
 
+const VALUELESS_FLAGS = new Set(['--git']);
+const REPEATABLE_FLAGS = new Set(['--mcp']);
+const OPTIONAL_FLAGS = new Set(['--now', '--policy', '--pinned', '--observed', '--git', '--package-root', '--mcp', '--openai-model', '--anthropic-model']);
+
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   if (!command || !COMMANDS[command]) fail('PACT_RELEASE_CLI_UNKNOWN_COMMAND');
@@ -40,13 +56,22 @@ function parseArgs(argv) {
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (!spec.flags.includes(flag)) fail(`PACT_RELEASE_CLI_UNKNOWN_FLAG:${flag}`);
+    if (VALUELESS_FLAGS.has(flag)) {
+      if (Object.prototype.hasOwnProperty.call(options, flag)) fail(`PACT_RELEASE_CLI_DUPLICATE_FLAG:${flag}`);
+      options[flag] = true;
+      continue;
+    }
     const value = rest[index + 1];
     if (value == null || value.startsWith('--')) fail(`PACT_RELEASE_CLI_FLAG_VALUE_REQUIRED:${flag}`);
-    if (Object.prototype.hasOwnProperty.call(options, flag)) fail(`PACT_RELEASE_CLI_DUPLICATE_FLAG:${flag}`);
-    options[flag] = value;
+    if (REPEATABLE_FLAGS.has(flag)) {
+      options[flag] = [...(options[flag] ?? []), value];
+    } else {
+      if (Object.prototype.hasOwnProperty.call(options, flag)) fail(`PACT_RELEASE_CLI_DUPLICATE_FLAG:${flag}`);
+      options[flag] = value;
+    }
     index += 1;
   }
-  for (const flag of spec.flags.filter(entry => !['--now', '--policy', '--pinned', '--observed'].includes(entry))) {
+  for (const flag of spec.flags.filter(entry => !OPTIONAL_FLAGS.has(entry))) {
     if (options[flag] == null) fail(`PACT_RELEASE_CLI_FLAG_REQUIRED:${flag}`);
   }
   return { command, options };
@@ -55,7 +80,7 @@ function parseArgs(argv) {
 function readJson(path, code) {
   let text;
   try {
-    text = readFileSync(path, 'utf8');
+    text = readFileSync(path === '-' ? 0 : path, 'utf8');
   } catch {
     fail(code);
   }
@@ -64,6 +89,12 @@ function readJson(path, code) {
   } catch {
     fail(`${code}_INVALID_JSON`);
   }
+}
+
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (typeof value !== 'string' || value.trim() === '') fail(`PACT_RELEASE_CLI_ENV_REQUIRED:${name}`);
+  return value;
 }
 
 function emit(value) {
@@ -77,6 +108,33 @@ export async function runCli(argv = process.argv.slice(2)) {
     const now = options['--now'] == null ? undefined : Number(options['--now']);
     if (now !== undefined && (!Number.isSafeInteger(now) || now < 0)) fail('PACT_RELEASE_CLI_NOW_INVALID');
     emit(await createReleaseLock(descriptor, now === undefined ? {} : { now: () => now }));
+    return 0;
+  }
+  if (command === 'discover') {
+    const discoveries = [];
+    if (options['--git']) discoveries.push(discoverGit({}));
+    if (options['--package-root'] != null) discoveries.push(discoverPackage({ root: options['--package-root'] }));
+    for (const url of options['--mcp'] ?? []) discoveries.push(await discoverMcpServer({ url }));
+    if (options['--openai-model'] != null) {
+      discoveries.push(await discoverOpenaiModel({
+        apiKey: requiredEnv('OPENAI_API_KEY'),
+        model: options['--openai-model']
+      }));
+    }
+    if (options['--anthropic-model'] != null) {
+      discoveries.push(await discoverAnthropicModel({
+        apiKey: requiredEnv('ANTHROPIC_API_KEY'),
+        model: options['--anthropic-model']
+      }));
+    }
+    if (discoveries.length === 0) fail('PACT_RELEASE_CLI_DISCOVER_SOURCE_REQUIRED');
+    const { descriptor, provenance } = composeDescriptor({
+      agent: options['--agent'],
+      environment: options['--environment'],
+      discoveries
+    });
+    process.stderr.write(`discovered: ${JSON.stringify(provenance)}\n`);
+    emit(descriptor);
     return 0;
   }
   if (command === 'diff') {

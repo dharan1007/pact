@@ -33,7 +33,7 @@ await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 // Ship source-compatible ESM modules as the reusable SDK. Keeping the module
 // graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'saga-observability.js', 'evidence-chain.js', 'rest-resource.js', 'provider-registry.js', 'provider-qualification.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
+for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'saga-observability.js', 'evidence-chain.js', 'rest-resource.js', 'provider-registry.js', 'provider-qualification.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'release-discover.js', 'trace-corpus.js', 'replay.js', 'release-bisect.js', 'release-canary.js', 'release-effects.js', 'release-recovery.js', 'fleet-graph.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
   await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 }
 
@@ -80,6 +80,8 @@ await mkdir(path.join(dist, 'docs'), { recursive: true });
 for (const file of ['agent-bridges.md', 'rest-provider.md', 'release-integrity.md']) {
   await cp(path.join(root, `docs/${file}`), path.join(dist, `docs/${file}`));
 }
+await mkdir(path.join(dist, 'types'), { recursive: true });
+await cp(path.join(root, 'types/release-integrity.d.ts'), path.join(dist, 'types/release-integrity.d.ts'));
 
 const provenance = describeReleaseProvenance(process.env);
 await writeFile(path.join(dist, 'release-provenance.json'), JSON.stringify({
@@ -89,6 +91,22 @@ await writeFile(path.join(dist, 'release-provenance.json'), JSON.stringify({
   buildContract: 'pact-release-v1',
   commitProvenance: provenance.commitProvenance,
   provenanceSources: provenance.sources
+}, null, 2) + '\n');
+
+const releasePackage = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+await writeFile(path.join(dist, 'sbom.cdx.json'), JSON.stringify({
+  bomFormat: 'CycloneDX',
+  specVersion: '1.5',
+  version: 1,
+  metadata: {
+    component: {
+      type: 'application',
+      name: releasePackage.name,
+      version: releasePackage.version,
+      description: 'PACT release bundle. This package ships zero runtime dependencies; execution requires Node.js 22+.'
+    }
+  },
+  components: []
 }, null, 2) + '\n');
 
 async function walk(dir, prefix='') {

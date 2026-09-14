@@ -624,6 +624,7 @@ export function createPactSagaAuthorityService({
       planHash: record.planHash,
       approvalBinding: record.approvalBinding,
       approvalClaims: clone(record.approvalClaims),
+      ...(record.approvalClaims?.releaseId ? { releaseId: record.approvalClaims.releaseId } : {}),
       executionAuthorizationId: record.executionAuthorization?.authorizationId ?? null,
       recoveryDecisions: clone(record.recoveryDecisions),
       steps: clone(execution.steps),

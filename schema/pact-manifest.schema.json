@@ -144,7 +144,7 @@
     "releaseIntegrity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["lockModule", "lockSchema", "diffModule", "registryModule", "driftModule", "gateModule", "attributionModule", "cli", "identityModel", "decisions"],
+      "required": ["lockModule", "lockSchema", "diffModule", "registryModule", "driftModule", "gateModule", "attributionModule", "discoverModule", "corpusModule", "replayModule", "bisectModule", "canaryModule", "effectsModule", "recoveryModule", "graphModule", "cli", "identityModel", "decisions"],
       "properties": {
         "lockModule": { "const": "./sdk/release-lock.js" },
         "lockSchema": { "const": "./schema/pact-lock.schema.json" },
@@ -153,6 +153,14 @@
         "driftModule": { "const": "./sdk/release-drift.js" },
         "gateModule": { "const": "./sdk/release-gate.js" },
         "attributionModule": { "const": "./sdk/release-attribution.js" },
+        "discoverModule": { "const": "./sdk/release-discover.js" },
+        "corpusModule": { "const": "./sdk/trace-corpus.js" },
+        "replayModule": { "const": "./sdk/replay.js" },
+        "bisectModule": { "const": "./sdk/release-bisect.js" },
+        "canaryModule": { "const": "./sdk/release-canary.js" },
+        "effectsModule": { "const": "./sdk/release-effects.js" },
+        "recoveryModule": { "const": "./sdk/release-recovery.js" },
+        "graphModule": { "const": "./sdk/fleet-graph.js" },
         "cli": { "const": "scripts/pact-release.mjs" },
         "identityModel": { "const": "content-hash-lockfile" },
         "decisions": { "type": "array", "prefixItems": [{"const":"ALLOW"},{"const":"WARN"},{"const":"BLOCK"}], "minItems": 3, "maxItems": 3 }

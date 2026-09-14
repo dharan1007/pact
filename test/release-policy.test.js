@@ -70,6 +70,58 @@ test('gate blocks on live drift unless the policy opts out', async () => {
   assert.equal(evaluateGate({ diff: clean, drift, policy: { blockOnDrift: false } }).decision, 'ALLOW');
 });
 
+test('gate enforces replay ceilings from empirical reports', async () => {
+  const { runExperiment, buildProveReport } = await import('../src/replay.js');
+  const traces = [
+    { traceId: 't1', agent: 'a', toolCalls: [{ tool: 'search', args: {} }] },
+    { traceId: 't2', agent: 'a', toolCalls: [{ tool: 'search', args: {} }] }
+  ];
+  const experiment = await runExperiment({
+    traces,
+    seed: 3,
+    baseline: async () => ({ toolCalls: [{ tool: 'search', args: {} }], output: 'ok', latencyMs: 100, costUsd: 0.01 }),
+    candidate: async ({ traceId }) => traceId === 't2'
+      ? { toolCalls: [{ tool: 'refund', args: {} }], output: 'ok', latencyMs: 400, costUsd: 0.05 }
+      : { toolCalls: [{ tool: 'search', args: {} }], output: 'ok', latencyMs: 100, costUsd: 0.01 },
+    isConsequential: name => name === 'refund',
+    isDestructive: name => name === 'refund'
+  });
+  const report = buildProveReport({ experiment, protectedTraceIds: ['t2'] });
+  const blocked = evaluateGate({
+    replay: report,
+    policy: { replayCeilings: { maxChangedOutcomeRate: 0.9, maxCostRisePct: 10, maxP95LatencyRisePct: 10 } }
+  });
+  assert.equal(blocked.decision, 'BLOCK');
+  assert.ok(blocked.reasons.some(reason => reason.startsWith('block:replay:destructive-proposed')));
+  assert.ok(blocked.reasons.some(reason => reason.startsWith('block:replay:changed-consequential:refund')));
+  assert.ok(blocked.reasons.some(reason => reason.startsWith('block:replay:cost-rise-pct')));
+  assert.ok(blocked.reasons.some(reason => reason.startsWith('block:replay:protected-trace:t2')));
+
+  const lenient = evaluateGate({
+    replay: report,
+    policy: { replayCeilings: { blockOnChangedConsequential: false, maxCostRisePct: 1000, maxP95LatencyRisePct: 1000, maxChangedOutcomeRate: 1, maxDestructiveCount: 99 } }
+  });
+  assert.equal(lenient.decision, 'BLOCK');
+  assert.deepEqual(lenient.reasons.filter(reason => reason.startsWith('block:replay:protected-trace')), ['block:replay:protected-trace:t2']);
+
+  const clean = evaluateGate({ replay: buildProveReport({ experiment: await runExperiment({
+    traces,
+    seed: 3,
+    baseline: async () => ({ toolCalls: [{ tool: 'search', args: {} }], output: 'ok' }),
+    candidate: async () => ({ toolCalls: [{ tool: 'search', args: {} }], output: 'ok' })
+  }) }), policy: { replayCeilings: {} } });
+  assert.equal(clean.decision, 'ALLOW');
+
+  assert.throws(
+    () => evaluateGate({ policy: { replayCeilings: { maxChangedOutcomeRate: 2 } } }),
+    /PACT_GATE_POLICY_REPLAY_RATE_INVALID/
+  );
+  assert.throws(
+    () => evaluateGate({ policy: { replayCeilings: { unknownKey: 1 } } }),
+    /PACT_GATE_POLICY_REPLAY_KEY_UNKNOWN:unknownKey/
+  );
+});
+
 test('attribution orders changed dependencies deterministically without probabilities', async () => {
   const store = new MemoryAuthorityStore();
   const registry = createReleaseRegistry({ store });

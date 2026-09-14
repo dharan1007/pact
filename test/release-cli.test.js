@@ -88,3 +88,35 @@ test('cli scripts pass syntax validation', () => {
   assert.equal(check.status, 0, check.stderr);
   assert.ok(readFileSync(path.join(root, 'scripts/pact-release.mjs'), 'utf8').includes('runCli'));
 });
+
+test('cli discover fingerprints the real working tree and pipes into capture', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pact-release-cli-'));
+  const pkgRoot = mkdtempSync(path.join(tmpdir(), 'pact-release-pkg-'));
+  writeFileSync(path.join(pkgRoot, 'package.json'), JSON.stringify({ name: 'demo', version: '0.1.0' }));
+  const discover = spawnSync(
+    process.execPath,
+    ['scripts/pact-release.mjs', 'discover', '--agent', 'cli-agent', '--environment', 'test', '--package-root', pkgRoot],
+    { cwd: root, encoding: 'utf8' }
+  );
+  assert.equal(discover.status, 0, discover.stderr);
+  const descriptor = JSON.parse(discover.stdout);
+  assert.equal(descriptor.agent, 'cli-agent');
+  assert.equal(descriptor.runtime.package, 'demo');
+
+  const capture = spawnSync(process.execPath, ['scripts/pact-release.mjs', 'capture', '--descriptor', '-', '--now', '1000'], {
+    cwd: root,
+    encoding: 'utf8',
+    input: discover.stdout
+  });
+  assert.equal(capture.status, 0, capture.stderr);
+  assert.match(json(capture).releaseId, /^pact_[a-f0-9]{64}$/);
+
+  const noSource = spawnSync(
+    process.execPath,
+    ['scripts/pact-release.mjs', 'discover', '--agent', 'a', '--environment', 'e'],
+    { cwd: root, encoding: 'utf8' }
+  );
+  assert.equal(noSource.status, 2);
+  assert.match(noSource.stderr, /PACT_RELEASE_CLI_DISCOVER_SOURCE_REQUIRED/);
+  void dir;
+});
