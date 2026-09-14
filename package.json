@@ -11,6 +11,8 @@
     "verify:production": "node scripts/verify-production.mjs",
     "verify:production-smoke": "node scripts/verify-production-smoke.mjs",
     "release": "node scripts/pact-release.mjs",
+    "check:contract": "node scripts/contract-gate.mjs",
+    "check:contract:strict": "node scripts/contract-gate.mjs --strict",
     "verify": "npm test && npm run check && npm run build && for f in dist/*.bundle.js; do node --check \"$f\" || exit 1; done"
   }
 }
