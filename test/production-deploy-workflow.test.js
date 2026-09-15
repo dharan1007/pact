@@ -8,31 +8,26 @@ async function workflowText() {
   return readFile(WORKFLOW, 'utf8');
 }
 
-test('production deploy workflow accepts manual dispatch or one tightly gated production-release request', async () => {
+test('production deploy accepts manual dispatch or an exact successful verify run from main', async () => {
   const text = await workflowText();
 
   assert.match(text, /workflow_dispatch:/);
   assert.match(text, /release_sha:/);
-  assert.match(text, /^\s*push:\s*$/m);
-  assert.match(text, /branches:\s*\[production-release\]/);
-  assert.doesNotMatch(text, /branches:\s*\[[^\]]*,[^\]]*\]/, 'release push trigger must target exactly one branch');
-
-  assert.match(text, /release-request\.json/);
-  assert.match(text, /schema[^\n]*===?[^\n]*1|schema[^\n]*!==?[^\n]*1/);
-  assert.match(text, /releaseSha|release_sha/);
-  assert.match(text, /\^\[0-9a-f\]\{40\}\$/);
-  assert.match(text, /nonce/);
-  assert.match(text, /github\.actor/);
-  assert.match(text, /github\.repository_owner/);
-  assert.match(text, /PACT_RELEASE_PUSH_ACTOR_FORBIDDEN/);
-  assert.match(text, /PACT_RELEASE_REQUEST_INVALID/);
+  assert.match(text, /workflow_run:/);
+  assert.match(text, /workflows:\s*\["verify"\]/);
+  assert.match(text, /types:\s*\[completed\]/);
+  assert.match(text, /github\.event\.workflow_run\.conclusion\s*==\s*'success'/);
+  assert.match(text, /github\.event\.workflow_run\.head_branch\s*==\s*'main'/);
+  assert.match(text, /github\.event\.workflow_run\.event\s*==\s*'push'/);
+  assert.match(text, /github\.event\.workflow_run\.head_sha/);
+  assert.doesNotMatch(text, /production-release/, 'a second mutable release branch must not be a production trust root');
+  assert.doesNotMatch(text, /release-request\.json/, 'deployment must not depend on a mutable release-request file');
 
   assert.match(text, /git fetch --no-tags origin main/);
   assert.match(text, /PACT_RELEASE_NOT_CURRENT_MAIN_HEAD/);
   assert.doesNotMatch(text, /hardening\/real-rest-provider-20260905/, 'dated hardening branches must not remain a production trust root');
   assert.doesNotMatch(text, /git merge-base --is-ancestor/);
 
-  assert.match(text, /name:\s*Read production release request[\s\S]*?ref:\s*production-release[\s\S]*?sparse-checkout:\s*release-request\.json/);
   assert.match(text, /name:\s*Check out exact release[\s\S]*?ref:\s*\$\{\{\s*steps\.release\.outputs\.release_sha\s*\}\}/);
   assert.match(text, /PACT_SOURCE_COMMIT:\s*\$\{\{\s*steps\.release\.outputs\.release_sha\s*\}\}/);
 
@@ -41,7 +36,7 @@ test('production deploy workflow accepts manual dispatch or one tightly gated pr
   assert.match(text, /PACT_PRODUCTION_URL:\s*https:\/\/pact-webmcp\.vercel\.app/);
 });
 
-test('production deploy workflow fails closed on missing deploy credentials and stages before production promotion', async () => {
+test('production deploy fails closed on missing deploy credentials and stages before production promotion', async () => {
   const text = await workflowText();
 
   assert.match(text, /secrets\.VERCEL_TOKEN/);
