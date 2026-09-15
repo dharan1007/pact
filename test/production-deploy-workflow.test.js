@@ -36,6 +36,13 @@ test('production deploy accepts manual dispatch or an exact successful verify ru
   assert.match(text, /PACT_PRODUCTION_URL:\s*https:\/\/pact-webmcp\.vercel\.app/);
 });
 
+test('production deploy pins every third-party GitHub Action to an immutable commit', async () => {
+  const text = await workflowText();
+  const uses = [...text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+).*$/gm)].map(match => match[1]);
+  assert.ok(uses.length >= 2, 'expected checkout and setup-node actions');
+  for (const action of uses) assert.match(action, /@[0-9a-f]{40}$/i, `un-pinned action: ${action}`);
+});
+
 test('production deploy fails closed on missing deploy credentials and stages before production promotion', async () => {
   const text = await workflowText();
 
