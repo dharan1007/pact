@@ -9,7 +9,15 @@ const REQUIRED_STATIC_FILES = [
   'release-manifest.json',
   'sdk/rest-resource.js',
   'sdk/server-runtime.js',
-  'sdk/agent-bridge.js'
+  'sdk/agent-bridge.js',
+  'sdk/provider-driver.js',
+  'sdk/provider-assurance.js',
+  'sdk/provider-policy.js',
+  'sdk/provider-qualification.js',
+  'sdk/providers/etag-json.js',
+  'sdk/providers/kubernetes-resource.js',
+  'sdk/providers/idempotent-command.js',
+  'sdk/providers/versioned-command.js'
 ];
 
 function validSha(value) {
