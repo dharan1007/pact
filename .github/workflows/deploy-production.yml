@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       release_sha:
-        description: Exact 40-character PACT commit SHA to promote
+        description: Exact 40-character current-main PACT commit SHA to promote
         required: true
         type: string
-  push:
-    branches: [production-release]
+  workflow_run:
+    workflows: ["verify"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -27,56 +28,30 @@ concurrency:
 jobs:
   deploy:
     name: deploy exact verified release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Read production release request
-        if: github.event_name == 'push'
-        uses: actions/checkout@v4
-        with:
-          ref: production-release
-          fetch-depth: 1
-          sparse-checkout: release-request.json
-          sparse-checkout-cone-mode: false
-
-      - name: Resolve and validate release request
+      - name: Resolve and validate exact verified release
         id: release
         env:
           PACT_EVENT_NAME: ${{ github.event_name }}
           PACT_DISPATCH_SHA: ${{ inputs.release_sha }}
-          PACT_RELEASE_ACTOR: ${{ github.actor }}
-          PACT_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          PACT_VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require('node:fs');
           const eventName = process.env.PACT_EVENT_NAME;
-          let releaseSha = process.env.PACT_DISPATCH_SHA || '';
-          if (eventName === 'push') {
-            if (process.env.PACT_RELEASE_ACTOR !== process.env.PACT_REPOSITORY_OWNER) {
-              console.error('PACT_RELEASE_PUSH_ACTOR_FORBIDDEN');
-              process.exit(1);
-            }
-            let request;
-            try {
-              request = JSON.parse(fs.readFileSync('release-request.json', 'utf8'));
-            } catch {
-              console.error('PACT_RELEASE_REQUEST_INVALID');
-              process.exit(1);
-            }
-            const valid = request && request.schema === 1
-              && typeof request.releaseSha === 'string'
-              && /^[0-9a-f]{40}$/.test(request.releaseSha)
-              && typeof request.nonce === 'string'
-              && /^[A-Za-z0-9._-]{16,128}$/.test(request.nonce)
-              && Object.keys(request).every(key => ['schema', 'releaseSha', 'nonce'].includes(key));
-            if (!valid) {
-              console.error('PACT_RELEASE_REQUEST_INVALID');
-              process.exit(1);
-            }
-            releaseSha = request.releaseSha;
-          }
+          const releaseSha = eventName === 'workflow_run'
+            ? String(process.env.PACT_VERIFIED_SHA || '')
+            : String(process.env.PACT_DISPATCH_SHA || '');
           if (!/^[0-9a-f]{40}$/.test(releaseSha)) {
             console.error('PACT_RELEASE_SHA_INVALID');
             process.exit(1);
