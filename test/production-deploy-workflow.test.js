@@ -27,8 +27,9 @@ test('production deploy workflow accepts manual dispatch or one tightly gated pr
   assert.match(text, /PACT_RELEASE_PUSH_ACTOR_FORBIDDEN/);
   assert.match(text, /PACT_RELEASE_REQUEST_INVALID/);
 
-  assert.match(text, /git fetch --no-tags origin hardening\/real-rest-provider-20260905/);
-  assert.match(text, /PACT_RELEASE_NOT_CURRENT_HARDENING_HEAD/);
+  assert.match(text, /git fetch --no-tags origin main/);
+  assert.match(text, /PACT_RELEASE_NOT_CURRENT_MAIN_HEAD/);
+  assert.doesNotMatch(text, /hardening\/real-rest-provider-20260905/, 'dated hardening branches must not remain a production trust root');
   assert.doesNotMatch(text, /git merge-base --is-ancestor/);
 
   assert.match(text, /name:\s*Read production release request[\s\S]*?ref:\s*production-release[\s\S]*?sparse-checkout:\s*release-request\.json/);
