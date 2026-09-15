@@ -39,7 +39,7 @@ for (const file of [
 
 const providersDir=path.join(dist,'sdk','providers');
 await mkdir(providersDir,{recursive:true});
-for(const file of ['etag-json.js','kubernetes-resource.js','idempotent-command.js']){
+for(const file of ['etag-json.js','kubernetes-resource.js','idempotent-command.js','versioned-command.js']){
   await cp(path.join(root,'src','providers',file),path.join(providersDir,file));
 }
 
