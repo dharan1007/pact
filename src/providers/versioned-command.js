@@ -1,0 +1,28 @@
+import { createHash } from 'node:crypto';
+import { canonicalStringify } from '../engine.js';
+import { definePactProviderDriver } from '../provider-driver.js';
+
+const fail=code=>{throw new Error(code)};
+const clone=value=>value===undefined?undefined:structuredClone(value);
+const isObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
+function nonEmpty(value,code,max=512){if(typeof value!=='string'||!value.trim())fail(code);const normalized=value.trim();if(normalized.length>max)fail(code);return normalized;}
+function hash(value){return createHash('sha256').update(canonicalStringify(value)).digest('hex');}
+function same(a,b){return canonicalStringify(a)===canonicalStringify(b);}
+function normalizeObservation(value,readRevision){if(!isObject(value)||!Object.prototype.hasOwnProperty.call(value,'state'))fail('PACT_VERSIONED_INVALID_OBSERVATION');let revision;try{revision=readRevision(value)}catch{fail('PACT_VERSIONED_INVALID_REVISION')}revision=nonEmpty(String(revision??''),'PACT_VERSIONED_INVALID_REVISION',512);return{revision,state:clone(value.state)};}
+
+export function createVersionedCommandDriver({id,version='1.0.0',providerId,resourceKey,atomicDomain,commandId,read,apply,observe,readRevision,classifyConflict,verifyOutcome}={}){
+  id=nonEmpty(id,'PACT_VERSIONED_DRIVER_ID_REQUIRED',128);version=nonEmpty(version,'PACT_VERSIONED_DRIVER_VERSION_REQUIRED',64);providerId=nonEmpty(providerId,'PACT_VERSIONED_PROVIDER_ID_REQUIRED',256);resourceKey=nonEmpty(resourceKey,'PACT_VERSIONED_RESOURCE_KEY_REQUIRED',512);atomicDomain=nonEmpty(atomicDomain,'PACT_VERSIONED_ATOMIC_DOMAIN_REQUIRED',256);commandId=nonEmpty(commandId,'PACT_VERSIONED_COMMAND_ID_REQUIRED',256);
+  if(typeof read!=='function')fail('PACT_VERSIONED_READER_REQUIRED');if(typeof apply!=='function')fail('PACT_VERSIONED_APPLIER_REQUIRED');if(typeof observe!=='function')fail('PACT_VERSIONED_OBSERVER_REQUIRED');if(typeof readRevision!=='function')fail('PACT_VERSIONED_REVISION_READER_REQUIRED');if(typeof classifyConflict!=='function')fail('PACT_VERSIONED_CONFLICT_CLASSIFIER_REQUIRED');if(typeof verifyOutcome!=='function')fail('PACT_VERSIONED_VERIFIER_REQUIRED');
+  const configDigest=hash({family:'explicit-version-command',id,version,providerId,resourceKey,atomicDomain,commandId});
+  const driver={id,version,
+    describe(){return Object.freeze({providerId,driverId:id,driverVersion:version,configDigest,resourceKey,atomicDomain,family:'explicit-version-command',capabilities:Object.freeze({idempotency:false,conditionalWrite:true,strongRevision:true,reconciliation:true,stateReplacement:false,remoteFencing:false})});},
+    async read(){return normalizeObservation(await read(),readRevision);},
+    async plan({intent,observed}={}){if(!isObject(intent))fail('PACT_VERSIONED_INTENT_REQUIRED');const normalized=normalizeObservation(observed,readRevision);return Object.freeze({providerId,driverId:id,driverVersion:version,commandId,intent:clone(intent),before:clone(normalized),expectedRevision:normalized.revision,payloadHash:hash({providerId,driverId:id,driverVersion:version,commandId,expectedRevision:normalized.revision,intent})});},
+    async precondition({observed,plan}={}){if(!isObject(plan)||typeof plan.expectedRevision!=='string')fail('PACT_VERSIONED_PLAN_REQUIRED');const normalized=normalizeObservation(observed,readRevision);if(normalized.revision!==plan.expectedRevision||!same(normalized.state,plan.before?.state))fail('PACT_VERSIONED_PRECONDITION_MISMATCH');return{kind:'explicit-version',revision:normalized.revision};},
+    async commit({plan,authorization,idempotencyKey}={}){if(!isObject(plan)||typeof plan.expectedRevision!=='string'||typeof plan.payloadHash!=='string')fail('PACT_VERSIONED_PLAN_REQUIRED');if(!isObject(authorization)||typeof authorization.authorizationId!=='string'||!authorization.authorizationId)fail('PACT_VERSIONED_AUTHORIZATION_REQUIRED');idempotencyKey=nonEmpty(idempotencyKey,'PACT_VERSIONED_IDEMPOTENCY_KEY_REQUIRED');if(authorization.authorizationId!==idempotencyKey)fail('PACT_VERSIONED_AUTHORIZATION_BINDING_MISMATCH');let result;try{result=await apply({intent:clone(plan.intent),expectedRevision:plan.expectedRevision,authorization:clone(authorization),idempotencyKey,plan:clone(plan)})}catch(cause){let conflict=false;try{conflict=classifyConflict(cause)===true}catch{}if(conflict)fail('PACT_VERSIONED_STALE_PROVIDER_STATE');const error=new Error('PACT_VERSIONED_COMMIT_UNCERTAIN',{cause});error.uncertain=true;throw error;}return normalizeObservation(result,readRevision);},
+    async observe({plan,providerResult}={}){if(!isObject(plan))fail('PACT_VERSIONED_PLAN_REQUIRED');return normalizeObservation(await observe({plan:clone(plan),providerResult:clone(providerResult)}),readRevision);},
+    async verify({plan,observed,providerResult}={}){if(!isObject(plan)||!isObject(observed))return false;const normalized=normalizeObservation(observed,readRevision);try{return (await verifyOutcome({intent:clone(plan.intent),observed:normalized,providerResult:clone(providerResult),plan:clone(plan)}))===true}catch{return false;}},
+    async reconcile({plan}={}){if(!isObject(plan)||!isObject(plan.before))return{classification:'UNRESOLVED'};let observed;try{observed=await driver.observe({plan})}catch{return{classification:'UNRESOLVED'}}let verified=false;try{verified=await driver.verify({plan,observed})}catch{return{classification:'UNRESOLVED'}}if(verified)return{classification:'COMMITTED'};if(observed.revision===plan.before.revision&&same(observed.state,plan.before.state))return{classification:'NOT_COMMITTED'};return{classification:'DIVERGED'};}
+  };
+  return definePactProviderDriver(driver);
+}
