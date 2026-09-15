@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "check": "node --check src/*.js && node --check scripts/*.mjs",
+    "check": "node scripts/check-syntax.mjs",
     "build": "node scripts/build.mjs",
     "verify:prebuilt": "node scripts/verify-prebuilt.mjs",
     "verify:production": "node scripts/verify-production.mjs",
