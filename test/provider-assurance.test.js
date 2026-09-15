@@ -5,7 +5,6 @@ import { PROVIDER_ASSURANCE, deriveProviderAssurance, assuranceAtLeast } from '.
 const now=2_000_000;
 const binding={providerId:'payments',driverId:'stripe.command',driverVersion:'1.0.0',configDigest:'a'.repeat(64)};
 const evidence=(probeType,overrides={})=>({schema:1,status:'provider-verified',probeType,binding,completedAt:now-1000,expiresAt:now+100_000,evidenceHash:'b'.repeat(64),...overrides});
-
 const derive=(items,capabilities={})=>deriveProviderAssurance({binding,description:{capabilities},evidence:items,now:()=>now});
 
 test('starts unqualified and advances only from executed evidence',()=>{
@@ -30,6 +29,15 @@ test('P3 requires reconciliation plus a replay-safe mutation model',()=>{
   const reconciliation=evidence('reconciliation');
   assert.equal(derive([conditional,reconciliation],{conditionalWrite:true,strongRevision:true,reconciliation:true}).assurance,PROVIDER_ASSURANCE.P2_CONDITIONAL);
   assert.equal(derive([conditional,reconciliation,evidence('idempotency')],{conditionalWrite:true,strongRevision:true,reconciliation:true,idempotency:true}).assurance,PROVIDER_ASSURANCE.P3_STRONGLY_VERSIONED);
+});
+
+test('evidence digest is stable across ordering and changes when the evidence identity changes',()=>{
+  const a=evidence('conditional-write',{evidenceHash:'c'.repeat(64)}),b=evidence('reconciliation',{evidenceHash:'d'.repeat(64)});
+  const left=deriveProviderAssurance({binding,description:{capabilities:{conditionalWrite:true,strongRevision:true,stateReplacement:true,reconciliation:true}},evidence:[a,b],now:()=>now});
+  const right=deriveProviderAssurance({binding,description:{capabilities:{conditionalWrite:true,strongRevision:true,stateReplacement:true,reconciliation:true}},evidence:[b,a],now:()=>now});
+  assert.match(left.evidenceDigest,/^[a-f0-9]{64}$/);assert.equal(left.evidenceDigest,right.evidenceDigest);
+  const changed=deriveProviderAssurance({binding,description:{capabilities:{conditionalWrite:true,strongRevision:true,stateReplacement:true,reconciliation:true}},evidence:[a,{...b,evidenceHash:'e'.repeat(64)}],now:()=>now});
+  assert.notEqual(changed.evidenceDigest,left.evidenceDigest);
 });
 
 test('policy comparison follows the explicit assurance ordering',()=>{
