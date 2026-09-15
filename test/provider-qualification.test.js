@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryAuthorityStore } from '../src/authority.js';
 import { createPactProviderQualifier } from '../src/provider-qualification.js';
+import { deriveProviderAssurance, PROVIDER_ASSURANCE } from '../src/provider-assurance.js';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
-
-function providerDescriptor() {
+const BINDING={providerId:'identity.account',driverId:'etag-json',driverVersion:'1.0.0',configDigest:'a'.repeat(64)};
+function providerDescriptor(withBinding=false) {
   return {
     id: 'identity.account',
     resourceKey: 'identity:account:42',
-    atomicDomain: 'identity/account/42'
+    atomicDomain: 'identity/account/42',
+    ...(withBinding?{driverId:BINDING.driverId,driverVersion:BINDING.driverVersion,configDigest:BINDING.configDigest}:{})
   };
 }
 
@@ -24,16 +26,8 @@ test('conditional-write qualification proves stale rejection and unchanged canon
     provider: providerDescriptor(),
     probe: {
       async read() { return { revision: `r${revision}`, state: clone(state) }; },
-      async advance() {
-        revision += 1;
-        state = { role: 'admin', marker: 'qualified' };
-        return { revision: `r${revision}`, state: clone(state) };
-      },
-      async attemptStaleWrite({ staleRevision }) {
-        staleAttempts += 1;
-        assert.equal(staleRevision, 'r1');
-        return { accepted: false, status: 412 };
-      }
+      async advance() { revision += 1; state = { role: 'admin', marker: 'qualified' }; return { revision: `r${revision}`, state: clone(state) }; },
+      async attemptStaleWrite({ staleRevision }) { staleAttempts += 1; assert.equal(staleRevision, 'r1'); return { accepted: false, status: 412 }; }
     }
   });
 
@@ -45,9 +39,22 @@ test('conditional-write qualification proves stale rejection and unchanged canon
   assert.equal(evidence.staleProbeAccepted, false);
   assert.equal(evidence.canonicalUnchanged, true);
   assert.match(evidence.evidenceHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(await qualifier.inspectQualification('identity.account', 'conditional-write'), evidence);
+});
 
-  const inspected = await qualifier.inspectQualification('identity.account', 'conditional-write');
-  assert.deepEqual(inspected, evidence);
+test('driver-bound qualification evidence is directly consumable by assurance and expires', async () => {
+  const store=new MemoryAuthorityStore();let revision=1;let state={marker:'before'};let clock=100_000;
+  const qualifier=createPactProviderQualifier({store,now:()=>clock,ttlMs:30*24*60*60*1000});
+  const evidence=await qualifier.qualifyConditionalWrite({provider:providerDescriptor(true),probe:{
+    async read(){return{revision:`r${revision}`,state:clone(state)}},
+    async advance(){revision+=1;state={marker:'after'};return{revision:`r${revision}`,state:clone(state)}},
+    async attemptStaleWrite(){return{accepted:false,status:412}}
+  }});
+  assert.deepEqual(evidence.binding,BINDING);
+  assert.equal(evidence.expiresAt,evidence.completedAt+30*24*60*60*1000);
+  assert.equal(deriveProviderAssurance({binding:BINDING,description:{capabilities:{conditionalWrite:true}},evidence:[evidence],now:()=>clock}).assurance,PROVIDER_ASSURANCE.P2_CONDITIONAL);
+  clock=evidence.expiresAt+1;
+  assert.equal(deriveProviderAssurance({binding:BINDING,description:{capabilities:{conditionalWrite:true}},evidence:[evidence],now:()=>clock}).assurance,PROVIDER_ASSURANCE.P0_UNQUALIFIED);
 });
 
 test('conditional-write qualification fails closed when stale mutation is accepted or changes canonical state', async () => {
@@ -77,12 +84,7 @@ test('remote-fencing qualification proves newer generation wins and stale genera
     provider: providerDescriptor(),
     generation: 41,
     probe: {
-      async apply({ generation }) {
-        if (generation <= highestFence) return { accepted: false, status: 409 };
-        highestFence = generation;
-        state = { fence: generation, value: 'newer' };
-        return { accepted: true, status: 200 };
-      },
+      async apply({ generation }) { if (generation <= highestFence) return { accepted: false, status: 409 }; highestFence = generation; state = { fence: generation, value: 'newer' }; return { accepted: true, status: 200 }; },
       async read() { return { revision: `f${highestFence}`, state: clone(state) }; }
     }
   });
