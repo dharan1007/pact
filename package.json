@@ -10,6 +10,8 @@
     "verify:prebuilt": "node scripts/verify-prebuilt.mjs",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:production-smoke": "node scripts/verify-production-smoke.mjs",
+    "qualify:provider": "node scripts/qualify-provider.mjs",
+    "qualify:summary": "node scripts/summarize-provider-qualification.mjs",
     "release": "node scripts/pact-release.mjs",
     "verify": "npm test && npm run check && npm run build && for f in dist/*.bundle.js; do node --check \"$f\" || exit 1; done"
   }
