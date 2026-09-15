@@ -107,7 +107,7 @@ jobs:
           fetch-depth: 0
           clean: true
 
-      - name: Prove checkout is the current hardening head
+      - name: Prove checkout is the current main head
         env:
           PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
         shell: bash
@@ -117,9 +117,9 @@ jobs:
             echo "PACT_RELEASE_CHECKOUT_MISMATCH" >&2
             exit 1
           }
-          git fetch --no-tags origin hardening/real-rest-provider-20260905
+          git fetch --no-tags origin main
           test "${PACT_SOURCE_COMMIT}" = "$(git rev-parse FETCH_HEAD)" || {
-            echo "PACT_RELEASE_NOT_CURRENT_HARDENING_HEAD" >&2
+            echo "PACT_RELEASE_NOT_CURRENT_MAIN_HEAD" >&2
             exit 1
           }
 
