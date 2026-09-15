@@ -16,7 +16,21 @@ function resolveUrl(base,path){path=nonEmpty(path,'PACT_K8S_RESOURCE_PATH_REQUIR
 async function json(response,code){const text=await response.text();if(!text)fail(code);let value;try{value=JSON.parse(text)}catch{fail(code)}if(!isObject(value))fail(code);return value;}
 function revisionOf(resource){const revision=resource?.metadata?.resourceVersion;if(typeof revision!=='string'||!revision.trim())fail('PACT_K8S_RESOURCE_VERSION_REQUIRED');return revision.trim();}
 function pathOf(value){if(!Array.isArray(value)||value.length<1||value.length>32)fail('PACT_K8S_PATH_REQUIRED');const parts=value.map(part=>{if(typeof part!=='string'||!part||part.length>128||FORBIDDEN_SEGMENTS.has(part)||part.includes('.'))fail('PACT_K8S_UNSAFE_PATH');return part});const key=parts.join('.');if(IMMUTABLE_PATHS.has(key))fail('PACT_K8S_IMMUTABLE_IDENTITY_PATH');return parts;}
-function operations(intent){if(!isObject(intent))fail('PACT_K8S_INTENT_REQUIRED');const raw=Array.isArray(intent.operations)?intent.operations:[{path:intent.path,value:intent.value}];if(raw.length<1||raw.length>256)fail('PACT_K8S_OPERATIONS_REQUIRED');const seen=new Set();return raw.map(entry=>{if(!isObject(entry)||!Object.prototype.hasOwnProperty.call(entry,'value'))fail('PACT_K8S_INVALID_OPERATION');const path=pathOf(entry.path),key=path.join('\0');if(seen.has(key))fail('PACT_K8S_DUPLICATE_OPERATION_PATH');seen.add(key);let value;try{value=JSON.parse(JSON.stringify(entry.value))}catch{fail('PACT_K8S_VALUE_MUST_BE_JSON')}return{path,value};});}
+function pathsOverlap(left,right){const count=Math.min(left.length,right.length);for(let i=0;i<count;i+=1)if(left[i]!==right[i])return false;return true;}
+function operations(intent){
+  if(!isObject(intent))fail('PACT_K8S_INTENT_REQUIRED');
+  const raw=Array.isArray(intent.operations)?intent.operations:[{path:intent.path,value:intent.value}];
+  if(raw.length<1||raw.length>256)fail('PACT_K8S_OPERATIONS_REQUIRED');
+  const normalized=[];
+  for(const entry of raw){
+    if(!isObject(entry)||!Object.prototype.hasOwnProperty.call(entry,'value'))fail('PACT_K8S_INVALID_OPERATION');
+    const path=pathOf(entry.path);
+    for(const prior of normalized){if(pathsOverlap(prior.path,path))fail(prior.path.length===path.length?'PACT_K8S_DUPLICATE_OPERATION_PATH':'PACT_K8S_OVERLAPPING_OPERATION_PATH');}
+    let value;try{value=JSON.parse(JSON.stringify(entry.value))}catch{fail('PACT_K8S_VALUE_MUST_BE_JSON')}
+    normalized.push({path,value});
+  }
+  return normalized;
+}
 function applyIntent(resource,intent){const next=clone(resource),effects=[];for(const op of operations(intent)){let cursor=next;for(const part of op.path.slice(0,-1)){if(!isObject(cursor)||!Object.prototype.hasOwnProperty.call(cursor,part))fail('PACT_K8S_EFFECT_PATH_MISSING');cursor=cursor[part];}const leaf=op.path.at(-1);if(!isObject(cursor)||!Object.prototype.hasOwnProperty.call(cursor,leaf))fail('PACT_K8S_EFFECT_PATH_MISSING');const before=clone(cursor[leaf]);cursor[leaf]=clone(op.value);effects.push({path:op.path.join('.'),before,after:clone(op.value)});}return{next,effects};}
 function desiredMatches(actual,desired){if(!isObject(actual)||!isObject(desired))return false;const normalized=clone(desired);if(isObject(normalized.metadata)&&isObject(actual.metadata))normalized.metadata.resourceVersion=actual.metadata.resourceVersion;return same(actual,normalized);}
 
