@@ -1,0 +1,87 @@
+name: self-hosted-branch-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or exact commit to verify
+        required: true
+        default: hardening/production-100-20260915
+        type: string
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, production-ci]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Record exact source SHA
+        shell: bash
+        run: echo "PACT_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high --omit=dev
+      - run: npm run verify
+      - name: Verify organisational provider release surface
+        run: |
+          set -euo pipefail
+          for required in \
+            dist/sdk/provider-driver.js \
+            dist/sdk/provider-assurance.js \
+            dist/sdk/provider-policy.js \
+            dist/sdk/provider-qualification.js \
+            dist/sdk/provider-qualification-suite.js \
+            dist/sdk/provider-qualification-report.js \
+            dist/sdk/providers/etag-json.js \
+            dist/sdk/providers/kubernetes-resource.js \
+            dist/sdk/providers/idempotent-command.js \
+            dist/sdk/providers/versioned-command.js; do
+            test -s "$required" || { echo "PACT_RELEASE_MISSING:$required"; exit 1; }
+          done
+      - name: Upload branch verification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pact-branch-verify-${{ github.run_id }}
+          path: |
+            dist/release-manifest.json
+            dist/release-provenance.json
+            dist/sbom.cdx.json
+          retention-days: 30
+          if-no-files-found: error
+
+  codeql:
+    runs-on: [self-hosted, Linux, X64, production-ci]
+    timeout-minutes: 45
+    permissions:
+      security-events: write
+      packages: read
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v3
+        with:
+          languages: javascript-typescript
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run verify
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v3
+        with:
+          category: /language:javascript-typescript
