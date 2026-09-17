@@ -7,8 +7,7 @@ const fail=code=>{throw new Error(code)};
 const clone=value=>value===undefined?undefined:structuredClone(value);
 const isObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 const STRONG_ETAG=/^"[^"\x00-\x20\x7f]+"$/;
-const SAFE_HEADER=/^[a-z][a-z0-9-]{0,127}$/;
-const FORBIDDEN_HEADERS=new Set(['authorization','cookie','set-cookie','if-match','idempotency-key','x-pact-idempotency-key','x-pact-authorization']);
+const FENCE_HEADER='x-pact-fence-generation';
 
 function nonEmpty(value,code,max=2048){
   if(typeof value!=='string'||!value.trim())fail(code);
@@ -17,17 +16,13 @@ function nonEmpty(value,code,max=2048){
   return normalized;
 }
 
-function configDigest(value){
-  return createHash('sha256').update(canonicalStringify(value)).digest('hex');
-}
-
+function configDigest(value){return createHash('sha256').update(canonicalStringify(value)).digest('hex');}
 function same(left,right){return canonicalStringify(left)===canonicalStringify(right)};
 function normalizeRemoteFencing(value){
   if(value==null||value===false)return null;
-  if(!isObject(value)||value.mode!=='monotonic-header')fail('PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID');
-  const header=nonEmpty(value.header,'PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID',128).toLowerCase();
-  if(!SAFE_HEADER.test(header)||FORBIDDEN_HEADERS.has(header))fail('PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID');
-  return Object.freeze({mode:'monotonic-header',header});
+  if(value===true)return Object.freeze({mode:'monotonic-header',header:FENCE_HEADER});
+  if(isObject(value)&&value.mode==='monotonic-header'&&String(value.header??'').toLowerCase()===FENCE_HEADER)return Object.freeze({mode:'monotonic-header',header:FENCE_HEADER});
+  fail('PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID');
 }
 function fenceGeneration(fence){
   if(!isObject(fence)||!Number.isSafeInteger(fence.generation)||fence.generation<1||typeof fence.ownerId!=='string'||!fence.ownerId.trim())fail('PACT_ETAG_DRIVER_REMOTE_FENCE_REQUIRED');
@@ -111,45 +106,15 @@ export function createEtagJsonDriver({
     id,
     version,
     describe(){
-      return Object.freeze({
-        providerId,
-        driverId:id,
-        driverVersion:version,
-        configDigest:digest,
-        resourceKey,
-        atomicDomain,
-        family:'etag-json',
-        capabilities:Object.freeze({
-          idempotency:true,
-          conditionalWrite:strongRevision,
-          strongRevision,
-          reconciliation:true,
-          stateReplacement:true,
-          remoteFencing:Boolean(fencing)
-        })
-      });
+      return Object.freeze({providerId,driverId:id,driverVersion:version,configDigest:digest,resourceKey,atomicDomain,family:'etag-json',capabilities:Object.freeze({idempotency:true,conditionalWrite:strongRevision,strongRevision,reconciliation:true,stateReplacement:true,remoteFencing:Boolean(fencing)})});
     },
-    async read(){
-      const state=await bridge.read();
-      return {revision:String(state.version),state:clone(state)};
-    },
+    async read(){const state=await bridge.read();return {revision:String(state.version),state:clone(state)};},
     async plan({intent,observed}={}){
       const before=canonicalFromObserved(observed);
       const planned=await adapter.plan({intent:clone(intent),state:clone(before)});
       if(!Array.isArray(planned?.effects)||planned.effects.length<1)fail('PACT_ETAG_DRIVER_EMPTY_PLAN');
       const next=applyEffects(before,planned.effects);
-      return Object.freeze({
-        providerId,
-        driverId:id,
-        driverVersion:version,
-        intent:clone(intent),
-        before,
-        next,
-        effects:clone(planned.effects),
-        invariants:clone(planned.invariants??[]),
-        metadata:clone(planned.metadata??{}),
-        command:Object.freeze({method:String(method).toUpperCase(),resourcePath})
-      });
+      return Object.freeze({providerId,driverId:id,driverVersion:version,intent:clone(intent),before,next,effects:clone(planned.effects),invariants:clone(planned.invariants??[]),metadata:clone(planned.metadata??{}),command:Object.freeze({method:String(method).toUpperCase(),resourcePath})});
     },
     async precondition({observed,plan}={}){
       const state=canonicalFromObserved(observed);
@@ -160,24 +125,18 @@ export function createEtagJsonDriver({
       if(!isObject(plan?.before)||!isObject(plan?.next))fail('PACT_ETAG_DRIVER_PLAN_REQUIRED');
       return bridgeForFence(fence).commit({expectedVersion:plan.before.version,nextState:clone(plan.next),authorization:clone(authorization),idempotencyKey});
     },
-    async observe(){
-      const state=await bridge.read();
-      return {revision:String(state.version),state:clone(state)};
-    },
+    async observe(){const state=await bridge.read();return {revision:String(state.version),state:clone(state)};},
     async verify({plan,observed}={}){
-      if(!isObject(plan)||!isObject(observed?.state))return false;
-      if(!same(observed.state,plan.next))return false;
+      if(!isObject(plan)||!isObject(observed?.state)||!same(observed.state,plan.next))return false;
       return adapter.verify({intent:clone(plan.intent),state:clone(observed.state)});
     },
     async reconcile({plan}={}){
       if(!isObject(plan?.before)||!isObject(plan?.next))return {classification:'UNRESOLVED'};
-      let current;
-      try{current=await bridge.read()}catch{return {classification:'UNRESOLVED'}}
+      let current;try{current=await bridge.read()}catch{return {classification:'UNRESOLVED'}}
       if(same(current,plan.next))return {classification:'COMMITTED'};
       if(same(current,plan.before))return {classification:'NOT_COMMITTED'};
       return {classification:'DIVERGED'};
     }
   };
-
   return definePactProviderDriver(driver);
 }
