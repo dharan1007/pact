@@ -1,460 +1,133 @@
 import { canonicalStringify, sha256Hex } from './engine.js';
 import { createPactRestResourceBridge, createPactJsonResourceAdapter } from './rest-resource.js';
 import { createPactProviderQualifier } from './provider-qualification.js';
+import { deriveProviderAssurance, PROVIDER_ASSURANCE } from './provider-assurance.js';
+import { evaluateProviderPolicy, assertProviderPolicy } from './provider-policy.js';
+import { createEtagJsonDriver } from './providers/etag-json.js';
+import { createKubernetesResourceDriver } from './providers/kubernetes-resource.js';
+import { createIdempotentCommandDriver } from './providers/idempotent-command.js';
+import { createVersionedCommandDriver } from './providers/versioned-command.js';
 
-const clone = value => value === undefined ? undefined : structuredClone(value);
-const fail = code => { throw new Error(code); };
+const clone=value=>value===undefined?undefined:structuredClone(value);
+const fail=code=>{throw new Error(code)};
+const ASSURANCE_VALUES=new Set(Object.values(PROVIDER_ASSURANCE));
+const DRIVER_PROBES=['idempotency','conditional-write','reconciliation','remote-fencing'];
+const FORBIDDEN_PATH=new Set(['__proto__','prototype','constructor']);
 
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+function isPlainObject(value){return Boolean(value)&&typeof value==='object'&&!Array.isArray(value)}
+function nonEmpty(value,code,max=512){if(typeof value!=='string'||value.trim()==='')fail(code);const normalized=value.trim();if(normalized.length>max)fail(code);return normalized}
+function same(left,right){return canonicalStringify(left)===canonicalStringify(right)}
+function assertStore(store){if(!store||typeof store.get!=='function'||typeof store.create!=='function'||typeof store.compareAndSwap!=='function')fail('PACT_PROVIDER_REGISTRY_ATOMIC_STORE_REQUIRED')}
+function safeHeader(value,code){value=nonEmpty(value,code,128).toLowerCase();if(!/^[a-z][a-z0-9-]{0,127}$/.test(value)||['authorization','cookie','set-cookie'].includes(value))fail(code);return value}
+function assurance(value,type){if(value==null)return type==='rest-json'?PROVIDER_ASSURANCE.P0_UNQUALIFIED:PROVIDER_ASSURANCE.P0_UNQUALIFIED;value=nonEmpty(value,'PACT_PROVIDER_REGISTRY_INVALID_MINIMUM_ASSURANCE',64);if(!ASSURANCE_VALUES.has(value))fail('PACT_PROVIDER_REGISTRY_INVALID_MINIMUM_ASSURANCE');return value}
+function httpsBase(value){let url;try{url=new URL(value)}catch{fail('PACT_PROVIDER_REGISTRY_INVALID_BASE_URL')}if(url.protocol!=='https:')fail('PACT_PROVIDER_REGISTRY_REQUIRES_HTTPS');url.username='';url.password='';url.search='';url.hash='';return url.toString().replace(/\/$/,'')}
+function endpoint(base,path,code='PACT_PROVIDER_REGISTRY_RESOURCE_PATH_REQUIRED'){path=nonEmpty(path,code,2048);let url;try{url=new URL(path,`${base}/`)}catch{fail('PACT_PROVIDER_REGISTRY_INVALID_RESOURCE_PATH')}if(url.origin!==new URL(base).origin)fail('PACT_PROVIDER_REGISTRY_CROSS_ORIGIN_RESOURCE');return url.toString()}
+function pathParts(value,code){value=nonEmpty(value,code,512);const parts=value.split('.');if(parts.some(part=>!part||FORBIDDEN_PATH.has(part)))fail(code);return parts}
+function getPath(value,path){let current=value;for(const part of path){if(current==null||typeof current!=='object'||!Object.prototype.hasOwnProperty.call(current,part))return undefined;current=current[part]}return current}
+function normalizeVerify(value){if(!isPlainObject(value))fail('PACT_PROVIDER_REGISTRY_VERIFY_REQUIRED');const allowed=new Set(['equals','matches']);if(Object.keys(value).some(key=>!allowed.has(key)))fail('PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID');const equals=Array.isArray(value.equals)?value.equals:[],matches=Array.isArray(value.matches)?value.matches:[];if(!equals.length&&!matches.length)fail('PACT_PROVIDER_REGISTRY_VERIFY_REQUIRED');if(equals.length+matches.length>32)fail('PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID');return Object.freeze({equals:equals.map(rule=>{if(!isPlainObject(rule)||Object.keys(rule).some(key=>!['observedPath','value'].includes(key))||!Object.prototype.hasOwnProperty.call(rule,'value'))fail('PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID');return{observedPath:pathParts(rule.observedPath,'PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID'),value:clone(rule.value)}}),matches:matches.map(rule=>{if(!isPlainObject(rule)||Object.keys(rule).some(key=>!['observedPath','intentPath'].includes(key)))fail('PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID');return{observedPath:pathParts(rule.observedPath,'PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID'),intentPath:pathParts(rule.intentPath,'PACT_PROVIDER_REGISTRY_VERIFY_RULE_INVALID')}})});}
+function verifyDeclarative(rules,intent,observed){for(const rule of rules.equals)if(!same(getPath(observed,rule.observedPath),rule.value))return false;for(const rule of rules.matches)if(!same(getPath(observed,rule.observedPath),getPath(intent,rule.intentPath)))return false;return true}
+function secret(raw,env){if(raw.bearerTokenEnv==null)return{bearerToken:'',secretConfigured:false};const name=nonEmpty(raw.bearerTokenEnv,'PACT_PROVIDER_REGISTRY_SECRET_ENV_REQUIRED',256),bearerToken=typeof env?.[name]==='string'?env[name].trim():'';if(!bearerToken)fail(`PACT_PROVIDER_REGISTRY_SECRET_REQUIRED:${name}`);return{bearerToken,secretConfigured:true}}
+function authHeaders(provider){return provider.bearerToken?{authorization:`Bearer ${provider.bearerToken}`}:{}}
+function normalizeRemoteFencing(value){if(value==null)return null;if(!isPlainObject(value))fail('PACT_PROVIDER_REGISTRY_INVALID_REMOTE_FENCING');const mode=nonEmpty(value.mode,'PACT_PROVIDER_REGISTRY_REMOTE_FENCING_MODE_REQUIRED',64);if(mode!=='monotonic-header')fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_MODE_UNSUPPORTED');const header=safeHeader(value.header,'PACT_PROVIDER_REGISTRY_UNSAFE_REMOTE_FENCING_HEADER');if(['x-pact-idempotency-key','x-pact-authorization'].includes(header))fail('PACT_PROVIDER_REGISTRY_UNSAFE_REMOTE_FENCING_HEADER');return Object.freeze({mode,header})}
+function normalizeConditionalWrite(value){if(value==null)return'conditional-write-unknown-strength';if(value==='conditional-write-unknown-strength'||value==='strong-validator')return value;fail('PACT_PROVIDER_REGISTRY_UNSUPPORTED_CONDITIONAL_WRITE')}
+function isStrongEntityTag(value){if(typeof value!=='string')return false;const tag=value.trim();if(tag.startsWith('W/'))return false;if(tag.length<2||tag[0]!=='"'||tag.at(-1)!=='"')return false;for(let index=1;index<tag.length-1;index+=1){const code=tag.charCodeAt(index);if(code===0x22||code<=0x20||code===0x7f)return false}return true}
+
+function normalizeLegacy(raw,env){
+  const id=nonEmpty(raw.id,'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED',256),type='rest-json',baseUrl=httpsBase(raw.baseUrl),resourcePath=nonEmpty(raw.resourcePath,'PACT_PROVIDER_REGISTRY_RESOURCE_PATH_REQUIRED',2048),resourceKey=nonEmpty(raw.resourceKey,'PACT_PROVIDER_REGISTRY_RESOURCE_KEY_REQUIRED',512),atomicDomain=nonEmpty(raw.atomicDomain,'PACT_PROVIDER_REGISTRY_ATOMIC_DOMAIN_REQUIRED',256);endpoint(baseUrl,resourcePath);const method=(typeof raw.method==='string'&&raw.method.trim()?raw.method.trim():'PUT').toUpperCase();if(method!=='PUT')fail('PACT_PROVIDER_REGISTRY_UNSAFE_MUTATION_SEMANTICS');const requested=isPlainObject(raw.capabilities)?raw.capabilities:{},compensation=requested.compensation===true,reversible=requested.reversible===true;if(compensation&&!reversible)fail('PACT_PROVIDER_REGISTRY_INVALID_REVERSIBILITY');const remoteFencing=normalizeRemoteFencing(requested.remoteFencing),conditionalWrite=normalizeConditionalWrite(requested.conditionalWrite),credentials=secret(raw,env);
+  return{id,type,baseUrl,resourcePath,resourceKey,atomicDomain,method,...credentials,remoteFencing,minimumAssurance:assurance(raw.minimumAssurance,type),capabilities:Object.freeze({atomicDomain,resourceKey,conditionalWrite,idempotency:'provider-key+durable-replay',mutation:method,readAfterWrite:'strong-response+canonical-reread',reconciliation:true,compensation,reversible,...(remoteFencing?{remoteFencing:remoteFencing.mode,fenceHeader:remoteFencing.header}:{})})};
 }
 
-function nonEmpty(value, code, max = 512) {
-  if (typeof value !== 'string' || value.trim() === '') fail(code);
-  const normalized = value.trim();
-  if (normalized.length > max) fail(code);
-  return normalized;
+function normalizeOrganizational(raw,env){
+  const id=nonEmpty(raw.id,'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED',256),type=nonEmpty(raw.type,'PACT_PROVIDER_REGISTRY_PROVIDER_TYPE_REQUIRED',64),resourceKey=nonEmpty(raw.resourceKey,'PACT_PROVIDER_REGISTRY_RESOURCE_KEY_REQUIRED',512),atomicDomain=nonEmpty(raw.atomicDomain,'PACT_PROVIDER_REGISTRY_ATOMIC_DOMAIN_REQUIRED',256),driverVersion=typeof raw.driverVersion==='string'&&raw.driverVersion.trim()?raw.driverVersion.trim():'1.0.0',baseUrl=httpsBase(raw.baseUrl),credentials=secret(raw,env),minimumAssurance=assurance(raw.minimumAssurance,type);
+  if(type==='etag-json')return{id,type,driverVersion,resourceKey,atomicDomain,baseUrl,resourcePath:nonEmpty(raw.resourcePath,'PACT_PROVIDER_REGISTRY_RESOURCE_PATH_REQUIRED',2048),method:String(raw.method??'PUT').toUpperCase(),conditionalWrite:normalizeConditionalWrite(raw.capabilities?.conditionalWrite),remoteFencing:Boolean(raw.capabilities?.remoteFencing),...credentials,minimumAssurance};
+  if(type==='kubernetes-resource')return{id,type,driverVersion,resourceKey,atomicDomain,baseUrl,resourcePath:nonEmpty(raw.resourcePath,'PACT_PROVIDER_REGISTRY_RESOURCE_PATH_REQUIRED',2048),...credentials,minimumAssurance};
+  if(type==='idempotent-command')return{id,type,driverVersion,resourceKey,atomicDomain,baseUrl,commandPath:nonEmpty(raw.commandPath,'PACT_PROVIDER_REGISTRY_COMMAND_PATH_REQUIRED',2048),observePath:nonEmpty(raw.observePath,'PACT_PROVIDER_REGISTRY_OBSERVE_PATH_REQUIRED',2048),commandId:nonEmpty(raw.commandId,'PACT_PROVIDER_REGISTRY_COMMAND_ID_REQUIRED',256),observeId:nonEmpty(raw.observeId,'PACT_PROVIDER_REGISTRY_OBSERVE_ID_REQUIRED',256),commandMethod:String(raw.commandMethod??'POST').toUpperCase(),observeMethod:String(raw.observeMethod??'GET').toUpperCase(),idempotencyHeader:safeHeader(raw.idempotencyHeader??'idempotency-key','PACT_PROVIDER_REGISTRY_IDEMPOTENCY_HEADER_INVALID'),revisionPath:pathParts(raw.revisionPath??'revision','PACT_PROVIDER_REGISTRY_REVISION_PATH_INVALID'),verify:normalizeVerify(raw.verify),...credentials,minimumAssurance};
+  if(type==='versioned-command'){const conflictStatuses=raw.conflictStatuses??[409,412];if(!Array.isArray(conflictStatuses)||!conflictStatuses.length||conflictStatuses.some(value=>!Number.isSafeInteger(value)||value<400||value>499))fail('PACT_PROVIDER_REGISTRY_CONFLICT_STATUS_INVALID');return{id,type,driverVersion,resourceKey,atomicDomain,baseUrl,readPath:nonEmpty(raw.readPath,'PACT_PROVIDER_REGISTRY_READ_PATH_REQUIRED',2048),commandPath:nonEmpty(raw.commandPath,'PACT_PROVIDER_REGISTRY_COMMAND_PATH_REQUIRED',2048),commandId:nonEmpty(raw.commandId,'PACT_PROVIDER_REGISTRY_COMMAND_ID_REQUIRED',256),readMethod:String(raw.readMethod??'GET').toUpperCase(),commandMethod:String(raw.commandMethod??'PUT').toUpperCase(),revisionPath:pathParts(raw.revisionPath??'revision','PACT_PROVIDER_REGISTRY_REVISION_PATH_INVALID'),expectedRevisionHeader:safeHeader(raw.expectedRevisionHeader??'if-match','PACT_PROVIDER_REGISTRY_REVISION_HEADER_INVALID'),verify:normalizeVerify(raw.verify),conflictStatuses:Object.freeze([...new Set(conflictStatuses)]),...credentials,minimumAssurance};}
+  fail(`PACT_PROVIDER_REGISTRY_PROVIDER_TYPE_UNSUPPORTED:${type}`);
 }
 
-function same(left, right) {
-  return canonicalStringify(left) === canonicalStringify(right);
-}
+function normalizeProviderConfig(raw,env){if(!isPlainObject(raw))fail('PACT_PROVIDER_REGISTRY_INVALID_PROVIDER');const type=nonEmpty(raw.type,'PACT_PROVIDER_REGISTRY_PROVIDER_TYPE_REQUIRED',64);return type==='rest-json'?normalizeLegacy(raw,env):normalizeOrganizational(raw,env)}
+function normalizeRegistryConfig(config,env){if(!isPlainObject(config)||config.version!==1||!Array.isArray(config.providers)||config.providers.length<1)fail('PACT_PROVIDER_REGISTRY_INVALID_CONFIG');if(config.providers.length>64)fail('PACT_PROVIDER_REGISTRY_TOO_MANY_PROVIDERS');const ids=new Set(),resources=new Set();return config.providers.map(raw=>{const provider=normalizeProviderConfig(raw,env);if(ids.has(provider.id))fail('PACT_PROVIDER_REGISTRY_DUPLICATE_PROVIDER');if(resources.has(provider.resourceKey))fail('PACT_PROVIDER_REGISTRY_DUPLICATE_RESOURCE');ids.add(provider.id);resources.add(provider.resourceKey);return provider})}
 
-function assertStore(store) {
-  if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
-    fail('PACT_PROVIDER_REGISTRY_ATOMIC_STORE_REQUIRED');
-  }
-}
+function setEffect(nextState,effect){if(typeof effect?.path!=='string'||!effect.path.startsWith('resource.'))fail('PACT_PROVIDER_REGISTRY_INVALID_EFFECT');const parts=effect.path.split('.').slice(1);if(parts.length<1)fail('PACT_PROVIDER_REGISTRY_INVALID_EFFECT');let cursor=nextState.resource;for(const key of parts.slice(0,-1)){if(!cursor||typeof cursor!=='object'||Array.isArray(cursor)||!Object.prototype.hasOwnProperty.call(cursor,key))fail('PACT_PROVIDER_REGISTRY_EFFECT_PATH_MISSING');cursor=cursor[key]}const leaf=parts.at(-1);if(!cursor||typeof cursor!=='object'||Array.isArray(cursor)||!Object.prototype.hasOwnProperty.call(cursor,leaf))fail('PACT_PROVIDER_REGISTRY_EFFECT_PATH_MISSING');cursor[leaf]=clone(effect.after)}
+async function buildNext(adapter,input,current){if(!isPlainObject(input)||!isPlainObject(input.intent))fail('PACT_PROVIDER_REGISTRY_INTENT_REQUIRED');const planned=await adapter.plan({intent:clone(input.intent),state:clone(current)});if(!Array.isArray(planned?.effects)||planned.effects.length<1)fail('PACT_PROVIDER_REGISTRY_EMPTY_PLAN');const next=clone(current);next.version=current.version+1;for(const effect of planned.effects)setEffect(next,effect);return next}
+function validateExecutionPlan(value){if(!isPlainObject(value)||value.version!==0||typeof value.idempotencyKey!=='string'||!value.idempotencyKey||typeof value.inputHash!=='string'||!isPlainObject(value.before)||!isPlainObject(value.next))fail('PACT_PROVIDER_REGISTRY_CORRUPT_EXECUTION_PLAN');return clone(value)}
+function validateFence(fence){if(!isPlainObject(fence)||!Number.isSafeInteger(fence.generation)||fence.generation<1||typeof fence.ownerId!=='string'||!fence.ownerId)fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCE_REQUIRED');return fence.generation}
+function markUncertain(error){if(error?.message==='PACT_REST_COMMIT_UNCERTAIN')error.uncertain=true;return error}
+function localQualification(provider){return Object.freeze({conditionalWrite:provider.capabilities.conditionalWrite==='strong-validator'?'locally-enforced':'declared',...(provider.remoteFencing?{remoteFencing:'declared'}:{})})}
+function localCapabilities(provider){return Object.freeze({...provider.capabilities,qualification:localQualification(provider)})}
+function assertQualificationBinding(evidence,provider){if(evidence==null)return;if(evidence.providerId!==provider.id||evidence.resourceKey!==provider.resourceKey||evidence.atomicDomain!==provider.atomicDomain)fail('PACT_PROVIDER_REGISTRY_QUALIFICATION_BINDING_MISMATCH')}
+async function resolvedCapabilities(provider,qualifier){const qualification={...localQualification(provider)};const conditional=await qualifier.inspectQualification(provider.id,'conditional-write');if(conditional){assertQualificationBinding(conditional,provider);qualification.conditionalWrite='provider-verified'}if(provider.remoteFencing){const fencing=await qualifier.inspectQualification(provider.id,'remote-fencing');if(fencing){assertQualificationBinding(fencing,provider);qualification.remoteFencing='provider-verified'}}return Object.freeze({...provider.capabilities,qualification:Object.freeze(qualification)})}
+function publicLegacy(provider,capabilities=localCapabilities(provider)){return Object.freeze({id:provider.id,type:provider.type,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,url:endpoint(provider.baseUrl,provider.resourcePath),secretConfigured:provider.secretConfigured,minimumAssurance:provider.minimumAssurance,capabilities})}
 
-function normalizeRemoteFencing(value) {
-  if (value == null) return null;
-  if (!isPlainObject(value)) fail('PACT_PROVIDER_REGISTRY_INVALID_REMOTE_FENCING');
-  const mode = nonEmpty(value.mode, 'PACT_PROVIDER_REGISTRY_REMOTE_FENCING_MODE_REQUIRED', 64);
-  if (mode !== 'monotonic-header') fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_MODE_UNSUPPORTED');
-  const header = nonEmpty(value.header, 'PACT_PROVIDER_REGISTRY_REMOTE_FENCING_HEADER_REQUIRED', 64).toLowerCase();
-  if (!/^x-[a-z0-9][a-z0-9-]{0,62}$/.test(header)) fail('PACT_PROVIDER_REGISTRY_UNSAFE_REMOTE_FENCING_HEADER');
-  if (['x-pact-idempotency-key', 'x-pact-authorization'].includes(header)) fail('PACT_PROVIDER_REGISTRY_UNSAFE_REMOTE_FENCING_HEADER');
-  return Object.freeze({ mode, header });
-}
-
-function normalizeConditionalWrite(value) {
-  if (value == null) return 'conditional-write-unknown-strength';
-  if (value === 'conditional-write-unknown-strength' || value === 'strong-validator') return value;
-  fail('PACT_PROVIDER_REGISTRY_UNSUPPORTED_CONDITIONAL_WRITE');
-}
-
-function isStrongEntityTag(value) {
-  if (typeof value !== 'string') return false;
-  const tag = value.trim();
-  if (tag.startsWith('W/')) return false;
-  if (tag.length < 2 || tag[0] !== '"' || tag.at(-1) !== '"') return false;
-  for (let index = 1; index < tag.length - 1; index += 1) {
-    const code = tag.charCodeAt(index);
-    if (code === 0x22 || code <= 0x20 || code === 0x7f) return false;
-  }
-  return true;
-}
-
-function normalizeProviderConfig(raw, env) {
-  if (!isPlainObject(raw)) fail('PACT_PROVIDER_REGISTRY_INVALID_PROVIDER');
-  const id = nonEmpty(raw.id, 'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED', 256);
-  const type = nonEmpty(raw.type, 'PACT_PROVIDER_REGISTRY_PROVIDER_TYPE_REQUIRED', 64);
-  if (type !== 'rest-json') fail(`PACT_PROVIDER_REGISTRY_PROVIDER_TYPE_UNSUPPORTED:${type}`);
-  const baseUrl = nonEmpty(raw.baseUrl, 'PACT_PROVIDER_REGISTRY_BASE_URL_REQUIRED', 2048);
-  const resourcePath = nonEmpty(raw.resourcePath, 'PACT_PROVIDER_REGISTRY_RESOURCE_PATH_REQUIRED', 2048);
-  const resourceKey = nonEmpty(raw.resourceKey, 'PACT_PROVIDER_REGISTRY_RESOURCE_KEY_REQUIRED', 512);
-  const atomicDomain = nonEmpty(raw.atomicDomain, 'PACT_PROVIDER_REGISTRY_ATOMIC_DOMAIN_REQUIRED', 256);
-  const method = (typeof raw.method === 'string' && raw.method.trim() ? raw.method.trim() : 'PUT').toUpperCase();
-  if (method !== 'PUT') fail('PACT_PROVIDER_REGISTRY_UNSAFE_MUTATION_SEMANTICS');
-
-  const requested = isPlainObject(raw.capabilities) ? raw.capabilities : {};
-  const compensation = requested.compensation === true;
-  const reversible = requested.reversible === true;
-  if (compensation && !reversible) fail('PACT_PROVIDER_REGISTRY_INVALID_REVERSIBILITY');
-  const remoteFencing = normalizeRemoteFencing(requested.remoteFencing);
-  const conditionalWrite = normalizeConditionalWrite(requested.conditionalWrite);
-
-  let bearerToken = '';
-  let secretConfigured = false;
-  if (raw.bearerTokenEnv != null) {
-    const secretName = nonEmpty(raw.bearerTokenEnv, 'PACT_PROVIDER_REGISTRY_SECRET_ENV_REQUIRED', 256);
-    bearerToken = typeof env?.[secretName] === 'string' ? env[secretName].trim() : '';
-    if (!bearerToken) fail(`PACT_PROVIDER_REGISTRY_SECRET_REQUIRED:${secretName}`);
-    secretConfigured = true;
-  }
-
-  return {
-    id,
-    type,
-    baseUrl,
-    resourcePath,
-    resourceKey,
-    atomicDomain,
-    method,
-    bearerToken,
-    secretConfigured,
-    remoteFencing,
-    capabilities: Object.freeze({
-      atomicDomain,
-      resourceKey,
-      conditionalWrite,
-      idempotency: 'provider-key+durable-replay',
-      mutation: method,
-      readAfterWrite: 'strong-response+canonical-reread',
-      reconciliation: true,
-      compensation,
-      reversible,
-      ...(remoteFencing ? { remoteFencing: remoteFencing.mode, fenceHeader: remoteFencing.header } : {})
-    })
-  };
-}
-
-function normalizeRegistryConfig(config, env) {
-  if (!isPlainObject(config) || config.version !== 1 || !Array.isArray(config.providers) || config.providers.length < 1) {
-    fail('PACT_PROVIDER_REGISTRY_INVALID_CONFIG');
-  }
-  if (config.providers.length > 64) fail('PACT_PROVIDER_REGISTRY_TOO_MANY_PROVIDERS');
-  const ids = new Set();
-  const resources = new Set();
-  return config.providers.map(raw => {
-    const provider = normalizeProviderConfig(raw, env);
-    if (ids.has(provider.id)) fail('PACT_PROVIDER_REGISTRY_DUPLICATE_PROVIDER');
-    if (resources.has(provider.resourceKey)) fail('PACT_PROVIDER_REGISTRY_DUPLICATE_RESOURCE');
-    ids.add(provider.id);
-    resources.add(provider.resourceKey);
-    return provider;
-  });
-}
-
-function setEffect(nextState, effect) {
-  if (typeof effect?.path !== 'string' || !effect.path.startsWith('resource.')) fail('PACT_PROVIDER_REGISTRY_INVALID_EFFECT');
-  const parts = effect.path.split('.').slice(1);
-  if (parts.length < 1) fail('PACT_PROVIDER_REGISTRY_INVALID_EFFECT');
-  let cursor = nextState.resource;
-  for (const key of parts.slice(0, -1)) {
-    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor) || !Object.prototype.hasOwnProperty.call(cursor, key)) {
-      fail('PACT_PROVIDER_REGISTRY_EFFECT_PATH_MISSING');
-    }
-    cursor = cursor[key];
-  }
-  const leaf = parts.at(-1);
-  if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor) || !Object.prototype.hasOwnProperty.call(cursor, leaf)) {
-    fail('PACT_PROVIDER_REGISTRY_EFFECT_PATH_MISSING');
-  }
-  cursor[leaf] = clone(effect.after);
-}
-
-async function buildNext(adapter, input, current) {
-  if (!isPlainObject(input) || !isPlainObject(input.intent)) fail('PACT_PROVIDER_REGISTRY_INTENT_REQUIRED');
-  const planned = await adapter.plan({ intent: clone(input.intent), state: clone(current) });
-  if (!Array.isArray(planned?.effects) || planned.effects.length < 1) fail('PACT_PROVIDER_REGISTRY_EMPTY_PLAN');
-  const next = clone(current);
-  next.version = current.version + 1;
-  for (const effect of planned.effects) setEffect(next, effect);
-  return next;
-}
-
-function validateExecutionPlan(value) {
-  if (!isPlainObject(value) || value.version !== 0 || typeof value.idempotencyKey !== 'string' || !value.idempotencyKey ||
-      typeof value.inputHash !== 'string' || !isPlainObject(value.before) || !isPlainObject(value.next)) {
-    fail('PACT_PROVIDER_REGISTRY_CORRUPT_EXECUTION_PLAN');
-  }
-  return clone(value);
-}
-
-function validateFence(fence) {
-  if (!isPlainObject(fence) || !Number.isSafeInteger(fence.generation) || fence.generation < 1 ||
-      typeof fence.ownerId !== 'string' || !fence.ownerId) fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCE_REQUIRED');
-  return fence.generation;
-}
-
-function markUncertain(error) {
-  if (error?.message === 'PACT_REST_COMMIT_UNCERTAIN') error.uncertain = true;
-  return error;
-}
-
-function localQualification(provider) {
-  return Object.freeze({
-    conditionalWrite: provider.capabilities.conditionalWrite === 'strong-validator' ? 'locally-enforced' : 'declared',
-    ...(provider.remoteFencing ? { remoteFencing: 'declared' } : {})
-  });
-}
-
-function localCapabilities(provider) {
-  return Object.freeze({ ...provider.capabilities, qualification: localQualification(provider) });
-}
-
-function assertQualificationBinding(evidence, provider) {
-  if (evidence == null) return;
-  if (evidence.providerId !== provider.id || evidence.resourceKey !== provider.resourceKey || evidence.atomicDomain !== provider.atomicDomain) {
-    fail('PACT_PROVIDER_REGISTRY_QUALIFICATION_BINDING_MISMATCH');
-  }
-}
-
-async function resolvedCapabilities(provider, qualifier) {
-  const qualification = { ...localQualification(provider) };
-  const conditional = await qualifier.inspectQualification(provider.id, 'conditional-write');
-  if (conditional) {
-    assertQualificationBinding(conditional, provider);
-    qualification.conditionalWrite = 'provider-verified';
-  }
-  if (provider.remoteFencing) {
-    const fencing = await qualifier.inspectQualification(provider.id, 'remote-fencing');
-    if (fencing) {
-      assertQualificationBinding(fencing, provider);
-      qualification.remoteFencing = 'provider-verified';
-    }
-  }
-  return Object.freeze({ ...provider.capabilities, qualification: Object.freeze(qualification) });
-}
-
-function publicProvider(provider, capabilities = localCapabilities(provider)) {
-  return Object.freeze({
-    id: provider.id,
-    type: provider.type,
-    resourceKey: provider.resourceKey,
-    atomicDomain: provider.atomicDomain,
-    url: new URL(provider.resourcePath, `${provider.baseUrl.replace(/\/$/, '')}/`).toString(),
-    secretConfigured: provider.secretConfigured,
-    capabilities
-  });
-}
-
-function createRestSagaHandler({ store, provider, fetchImpl, qualifier }) {
-  const baseHeaders = provider.bearerToken ? { authorization: `Bearer ${provider.bearerToken}` } : {};
-  const qualifiedFetchImpl = provider.capabilities.conditionalWrite === 'strong-validator'
-    ? async (url, options = {}) => {
-        const response = await fetchImpl(url, options);
-        const method = String(options.method ?? 'GET').toUpperCase();
-        if (method === 'GET' && response?.ok) {
-          const headers = response.headers;
-          const originalGet = typeof headers?.get === 'function' ? headers.get.bind(headers) : null;
-          if (!originalGet) fail('PACT_REST_STRONG_ETAG_REQUIRED');
-          const etag = originalGet('etag');
-          if (!isStrongEntityTag(etag)) fail('PACT_REST_STRONG_ETAG_REQUIRED');
-        }
-        return response;
-      }
-    : fetchImpl;
-  const createBridge = (extraHeaders = {}) => createPactRestResourceBridge({
-    store,
-    key: provider.resourceKey,
-    baseUrl: provider.baseUrl,
-    resourcePath: provider.resourcePath,
-    fetchImpl: qualifiedFetchImpl,
-    headers: { ...baseHeaders, ...extraHeaders },
-    method: provider.method
-  });
-  const bridge = createBridge();
-  const bridgeForFence = fence => {
-    if (!provider.remoteFencing) return bridge;
-    const generation = validateFence(fence);
-    return createBridge({ [provider.remoteFencing.header]: String(generation) });
-  };
-  const adapter = createPactJsonResourceAdapter({ id: provider.id, version: '1.0.0' });
-  const planPrefix = `provider-plan:${provider.id}:`;
-
-  async function planKey(idempotencyKey, phase) {
-    const digest = await sha256Hex({ namespace: 'pact-provider-plan-v1', provider: provider.id, phase, idempotencyKey });
-    return `${planPrefix}${phase}:${digest}`;
-  }
-
-  async function prepareForward(input, idempotencyKey) {
-    const inputHash = await sha256Hex({ provider: provider.id, input });
-    const key = await planKey(idempotencyKey, 'forward');
-    const existing = await store.get(key);
-    if (existing) {
-      const plan = validateExecutionPlan(existing);
-      if (plan.idempotencyKey !== idempotencyKey || plan.inputHash !== inputHash) fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');
-      return plan;
-    }
-    const before = await bridge.read();
-    const next = await buildNext(adapter, input, before);
-    const plan = { version: 0, idempotencyKey, inputHash, before: clone(before), next: clone(next) };
-    if (await store.create(key, plan)) return clone(plan);
-    const raced = validateExecutionPlan(await store.get(key));
-    if (raced.idempotencyKey !== idempotencyKey || raced.inputHash !== inputHash) fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');
-    return raced;
-  }
-
-  async function prepareCompensation(forwardResult, idempotencyKey) {
-    if (!provider.capabilities.compensation) fail('PACT_PROVIDER_REGISTRY_COMPENSATION_UNSUPPORTED');
-    if (!isPlainObject(forwardResult?.before) || !isPlainObject(forwardResult?.after)) fail('PACT_PROVIDER_REGISTRY_FORWARD_RESULT_REQUIRED');
-    const inputHash = await sha256Hex({ provider: provider.id, forwardResult });
-    const key = await planKey(idempotencyKey, 'compensate');
-    const existing = await store.get(key);
-    if (existing) {
-      const plan = validateExecutionPlan(existing);
-      if (plan.idempotencyKey !== idempotencyKey || plan.inputHash !== inputHash) fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');
-      return plan;
-    }
-    const current = await bridge.read();
-    if (current.version !== forwardResult.after.version || !same(current.resource, forwardResult.after.resource)) {
-      fail('PACT_PROVIDER_REGISTRY_COMPENSATION_CONFLICT');
-    }
-    const next = { version: current.version + 1, resource: clone(forwardResult.before.resource) };
-    const plan = { version: 0, idempotencyKey, inputHash, before: clone(current), next };
-    if (await store.create(key, plan)) return clone(plan);
-    const raced = validateExecutionPlan(await store.get(key));
-    if (raced.idempotencyKey !== idempotencyKey || raced.inputHash !== inputHash) fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');
-    return raced;
-  }
-
-  async function commitPlan(plan, fence) {
-    return bridgeForFence(fence).commit({
-      expectedVersion: plan.before.version,
-      nextState: clone(plan.next),
-      authorization: { authorizationId: plan.idempotencyKey },
-      idempotencyKey: plan.idempotencyKey
-    });
-  }
-
-  async function reconcilePlan(plan, fence) {
-    try {
-      await commitPlan(plan, fence);
-      return 'committed';
-    } catch (error) {
-      if (error?.message === 'PACT_REST_COMMIT_UNCERTAIN') return 'uncertain';
-      let observed;
-      try { observed = await bridge.read(); } catch { return 'uncertain'; }
-      if (same(observed, plan.next)) return 'committed';
-      if (same(observed, plan.before)) return 'not_committed';
-      return 'uncertain';
-    }
-  }
-
-  async function recoveryEvidence({ phase, input, idempotencyKey, forwardResult }) {
-    const plan = phase === 'compensation'
-      ? await prepareCompensation(forwardResult, idempotencyKey)
-      : await prepareForward(input, idempotencyKey);
-    let observed = null;
-    let classification = 'unavailable';
-    try {
-      observed = await bridge.read();
-      if (same(observed, plan.next)) classification = 'committed';
-      else if (same(observed, plan.before)) classification = 'not_committed';
-      else classification = 'diverged';
-    } catch {
-      classification = 'unavailable';
-    }
-    return {
-      provider: provider.id,
-      resourceKey: provider.resourceKey,
-      atomicDomain: provider.atomicDomain,
-      phase,
-      before: clone(plan.before),
-      intended: clone(plan.next),
-      observed: clone(observed),
-      classification,
-      capabilities: await resolvedCapabilities(provider, qualifier)
-    };
-  }
-
-  const handler = {
-    capabilities: localCapabilities(provider),
-    async getCapabilities() {
-      return resolvedCapabilities(provider, qualifier);
-    },
-    async execute({ input, idempotencyKey, fence }) {
-      const plan = await prepareForward(input, idempotencyKey);
-      try {
-        const after = await commitPlan(plan, fence);
-        return { provider: provider.id, resourceKey: provider.resourceKey, before: clone(plan.before), after: clone(after) };
-      } catch (error) {
-        throw markUncertain(error);
-      }
-    },
-    async verify({ input, idempotencyKey, result }) {
-      if (result?.after && result?.before) {
-        const observed = await bridge.read();
-        return same(observed, result.after);
-      }
-      const plan = await prepareForward(input, idempotencyKey);
-      const observed = await bridge.read();
-      return same(observed, plan.next);
-    },
-    async reconcile({ input, idempotencyKey, fence }) {
-      return reconcilePlan(await prepareForward(input, idempotencyKey), fence);
-    },
-    recoveryEvidence
-  };
-
-  if (provider.capabilities.compensation) {
-    handler.compensate = async ({ forwardResult, idempotencyKey, fence }) => {
-      const plan = await prepareCompensation(forwardResult, idempotencyKey);
-      try {
-        const after = await commitPlan(plan, fence);
-        return { provider: provider.id, resourceKey: provider.resourceKey, before: clone(plan.before), after: clone(after) };
-      } catch (error) {
-        throw markUncertain(error);
-      }
-    };
-    handler.verifyCompensation = async ({ forwardResult, idempotencyKey }) => {
-      const plan = await prepareCompensation(forwardResult, idempotencyKey);
-      const observed = await bridge.read();
-      return same(observed, plan.next);
-    };
-    handler.reconcileCompensation = async ({ forwardResult, idempotencyKey, fence }) => {
-      return reconcilePlan(await prepareCompensation(forwardResult, idempotencyKey), fence);
-    };
-  }
-
+function createRestSagaHandler({store,provider,fetchImpl,qualifier}){
+  const baseHeaders=authHeaders(provider);const qualifiedFetchImpl=provider.capabilities.conditionalWrite==='strong-validator'?async(url,options={})=>{const response=await fetchImpl(url,options);const method=String(options.method??'GET').toUpperCase();if(method==='GET'&&response?.ok){const originalGet=typeof response.headers?.get==='function'?response.headers.get.bind(response.headers):null;if(!originalGet)fail('PACT_REST_STRONG_ETAG_REQUIRED');const etag=originalGet('etag');if(!isStrongEntityTag(etag))fail('PACT_REST_STRONG_ETAG_REQUIRED')}return response}:fetchImpl;
+  const createBridge=(extraHeaders={})=>createPactRestResourceBridge({store,key:provider.resourceKey,baseUrl:provider.baseUrl,resourcePath:provider.resourcePath,fetchImpl:qualifiedFetchImpl,headers:{...baseHeaders,...extraHeaders},method:provider.method});const bridge=createBridge();const bridgeForFence=fence=>{if(!provider.remoteFencing)return bridge;const generation=validateFence(fence);return createBridge({[provider.remoteFencing.header]:String(generation)})};const adapter=createPactJsonResourceAdapter({id:provider.id,version:'1.0.0'});const planPrefix=`provider-plan:${provider.id}:`;
+  async function planKey(idempotencyKey,phase){const digest=await sha256Hex({namespace:'pact-provider-plan-v1',provider:provider.id,phase,idempotencyKey});return`${planPrefix}${phase}:${digest}`}
+  async function prepareForward(input,idempotencyKey){const inputHash=await sha256Hex({provider:provider.id,input}),key=await planKey(idempotencyKey,'forward'),existing=await store.get(key);if(existing){const plan=validateExecutionPlan(existing);if(plan.idempotencyKey!==idempotencyKey||plan.inputHash!==inputHash)fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');return plan}const before=await bridge.read(),next=await buildNext(adapter,input,before),plan={version:0,idempotencyKey,inputHash,before:clone(before),next:clone(next)};if(await store.create(key,plan))return clone(plan);const raced=validateExecutionPlan(await store.get(key));if(raced.idempotencyKey!==idempotencyKey||raced.inputHash!==inputHash)fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');return raced}
+  async function prepareCompensation(forwardResult,idempotencyKey){if(!provider.capabilities.compensation)fail('PACT_PROVIDER_REGISTRY_COMPENSATION_UNSUPPORTED');if(!isPlainObject(forwardResult?.before)||!isPlainObject(forwardResult?.after))fail('PACT_PROVIDER_REGISTRY_FORWARD_RESULT_REQUIRED');const inputHash=await sha256Hex({provider:provider.id,forwardResult}),key=await planKey(idempotencyKey,'compensate'),existing=await store.get(key);if(existing){const plan=validateExecutionPlan(existing);if(plan.idempotencyKey!==idempotencyKey||plan.inputHash!==inputHash)fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');return plan}const current=await bridge.read();if(current.version!==forwardResult.after.version||!same(current.resource,forwardResult.after.resource))fail('PACT_PROVIDER_REGISTRY_COMPENSATION_CONFLICT');const next={version:current.version+1,resource:clone(forwardResult.before.resource)},plan={version:0,idempotencyKey,inputHash,before:clone(current),next};if(await store.create(key,plan))return clone(plan);const raced=validateExecutionPlan(await store.get(key));if(raced.idempotencyKey!==idempotencyKey||raced.inputHash!==inputHash)fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');return raced}
+  const commitPlan=(plan,fence)=>bridgeForFence(fence).commit({expectedVersion:plan.before.version,nextState:clone(plan.next),authorization:{authorizationId:plan.idempotencyKey},idempotencyKey:plan.idempotencyKey});
+  async function reconcilePlan(plan,fence){try{await commitPlan(plan,fence);return'committed'}catch(error){if(error?.message==='PACT_REST_COMMIT_UNCERTAIN')return'uncertain';let observed;try{observed=await bridge.read()}catch{return'uncertain'}if(same(observed,plan.next))return'committed';if(same(observed,plan.before))return'not_committed';return'uncertain'}}
+  async function recoveryEvidence({phase,input,idempotencyKey,forwardResult}){const plan=phase==='compensation'?await prepareCompensation(forwardResult,idempotencyKey):await prepareForward(input,idempotencyKey);let observed=null,classification='unavailable';try{observed=await bridge.read();if(same(observed,plan.next))classification='committed';else if(same(observed,plan.before))classification='not_committed';else classification='diverged'}catch{}return{provider:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,phase,before:clone(plan.before),intended:clone(plan.next),observed:clone(observed),classification,capabilities:await resolvedCapabilities(provider,qualifier)}}
+  const handler={capabilities:localCapabilities(provider),async getCapabilities(){return resolvedCapabilities(provider,qualifier)},async execute({input,idempotencyKey,fence}){const plan=await prepareForward(input,idempotencyKey);try{const after=await commitPlan(plan,fence);return{provider:provider.id,resourceKey:provider.resourceKey,before:clone(plan.before),after:clone(after)}}catch(error){throw markUncertain(error)}},async verify({input,idempotencyKey,result}){if(result?.after&&result?.before){const observed=await bridge.read();return same(observed,result.after)}const plan=await prepareForward(input,idempotencyKey),observed=await bridge.read();return same(observed,plan.next)},async reconcile({input,idempotencyKey,fence}){return reconcilePlan(await prepareForward(input,idempotencyKey),fence)},recoveryEvidence};
+  if(provider.capabilities.compensation){handler.compensate=async({forwardResult,idempotencyKey,fence})=>{const plan=await prepareCompensation(forwardResult,idempotencyKey);try{const after=await commitPlan(plan,fence);return{provider:provider.id,resourceKey:provider.resourceKey,before:clone(plan.before),after:clone(after)}}catch(error){throw markUncertain(error)}};handler.verifyCompensation=async({forwardResult,idempotencyKey})=>{const plan=await prepareCompensation(forwardResult,idempotencyKey),observed=await bridge.read();return same(observed,plan.next)};handler.reconcileCompensation=async({forwardResult,idempotencyKey,fence})=>reconcilePlan(await prepareCompensation(forwardResult,idempotencyKey),fence)}
   return Object.freeze(handler);
 }
 
-export function createPactProviderRegistry({ store, config, env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  assertStore(store);
-  if (typeof fetchImpl !== 'function') fail('PACT_PROVIDER_REGISTRY_FETCH_REQUIRED');
-  const providers = normalizeRegistryConfig(config, env);
-  const qualifier = createPactProviderQualifier({ store });
-  const byId = new Map(providers.map(provider => [provider.id, provider]));
-  const handlers = {};
-  for (const provider of providers) handlers[provider.id] = createRestSagaHandler({ store, provider, fetchImpl, qualifier });
+async function responseJson(response,code){const text=await response.text();if(!text)fail(code);let body;try{body=JSON.parse(text)}catch{fail(code)}if(!isPlainObject(body))fail(code);return body}
+function createHttpFunctions(provider,fetchImpl){const headers=authHeaders(provider);const doRequest=async(url,{method='GET',extraHeaders={},body}={})=>{let response;try{response=await fetchImpl(url,{method,headers:{accept:'application/json',...(body!==undefined?{'content-type':'application/json'}:{}),...headers,...extraHeaders},...(body!==undefined?{body:JSON.stringify(body)}:{})})}catch(cause){throw cause}return response};return{doRequest,headers}}
 
-  const providerFor = providerId => {
-    providerId = nonEmpty(providerId, 'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED', 256);
-    const provider = byId.get(providerId);
-    if (!provider) fail(`PACT_PROVIDER_REGISTRY_PROVIDER_NOT_FOUND:${providerId}`);
-    return provider;
+function instantiateDriver(provider,{store,fetchImpl}){
+  const headers=authHeaders(provider);
+  if(provider.type==='etag-json')return createEtagJsonDriver({id:provider.id,version:provider.driverVersion,providerId:provider.id,store,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,baseUrl:provider.baseUrl,resourcePath:provider.resourcePath,fetchImpl,headers,method:provider.method,conditionalWrite:provider.conditionalWrite,remoteFencing:provider.remoteFencing});
+  if(provider.type==='kubernetes-resource')return createKubernetesResourceDriver({id:provider.id,version:provider.driverVersion,providerId:provider.id,baseUrl:provider.baseUrl,resourcePath:provider.resourcePath,fetchImpl,bearerToken:provider.bearerToken,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain});
+  const {doRequest}=createHttpFunctions(provider,fetchImpl);
+  if(provider.type==='idempotent-command'){
+    const commandUrl=endpoint(provider.baseUrl,provider.commandPath,'PACT_PROVIDER_REGISTRY_COMMAND_PATH_REQUIRED'),observeUrl=endpoint(provider.baseUrl,provider.observePath,'PACT_PROVIDER_REGISTRY_OBSERVE_PATH_REQUIRED');
+    const command=async({intent,idempotencyKey})=>{const response=await doRequest(commandUrl,{method:provider.commandMethod,extraHeaders:{[provider.idempotencyHeader]:idempotencyKey},body:intent});if(!response?.ok){const error=new Error(`PACT_PROVIDER_HTTP_${response?.status??0}`);error.status=response?.status??0;error.definitive=(response?.status??0)>=400&&(response?.status??0)<500;throw error}return responseJson(response,'PACT_PROVIDER_REGISTRY_COMMAND_RESPONSE_INVALID')};
+    const observe=async()=>{const response=await doRequest(observeUrl,{method:provider.observeMethod});if(!response?.ok)throw new Error(`PACT_PROVIDER_HTTP_${response?.status??0}`);const body=await responseJson(response,'PACT_PROVIDER_REGISTRY_OBSERVE_RESPONSE_INVALID'),revision=getPath(body,provider.revisionPath);if(revision==null)fail('PACT_PROVIDER_REGISTRY_REVISION_MISSING');return{revision:String(revision),state:body}};
+    return createIdempotentCommandDriver({id:provider.id,version:provider.driverVersion,providerId:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,commandId:provider.commandId,observeId:provider.observeId,store,command,observe,verifyOutcome:({intent,observed})=>verifyDeclarative(provider.verify,intent,observed.state)});
+  }
+  if(provider.type==='versioned-command'){
+    const readUrl=endpoint(provider.baseUrl,provider.readPath,'PACT_PROVIDER_REGISTRY_READ_PATH_REQUIRED'),commandUrl=endpoint(provider.baseUrl,provider.commandPath,'PACT_PROVIDER_REGISTRY_COMMAND_PATH_REQUIRED');
+    const read=async()=>{const response=await doRequest(readUrl,{method:provider.readMethod});if(!response?.ok)throw new Error(`PACT_PROVIDER_HTTP_${response?.status??0}`);const body=await responseJson(response,'PACT_PROVIDER_REGISTRY_READ_RESPONSE_INVALID'),revision=getPath(body,provider.revisionPath);if(revision==null)fail('PACT_PROVIDER_REGISTRY_REVISION_MISSING');return{revision:String(revision),state:body}};
+    const apply=async({intent,expectedRevision})=>{const response=await doRequest(commandUrl,{method:provider.commandMethod,extraHeaders:{[provider.expectedRevisionHeader]:String(expectedRevision)},body:intent});if(!response?.ok){const error=new Error(`PACT_PROVIDER_HTTP_${response?.status??0}`);error.status=response?.status??0;throw error}const body=await responseJson(response,'PACT_PROVIDER_REGISTRY_COMMAND_RESPONSE_INVALID'),revision=getPath(body,provider.revisionPath);if(revision==null)fail('PACT_PROVIDER_REGISTRY_REVISION_MISSING');return{revision:String(revision),state:body}};
+    return createVersionedCommandDriver({id:provider.id,version:provider.driverVersion,providerId:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,commandId:provider.commandId,read,apply,observe:read,readRevision:value=>value.revision,classifyConflict:error=>provider.conflictStatuses.includes(error?.status),verifyOutcome:({intent,observed})=>verifyDeclarative(provider.verify,intent,observed.state)});
+  }
+  fail(`PACT_PROVIDER_REGISTRY_PROVIDER_TYPE_UNSUPPORTED:${provider.type}`);
+}
+
+function driverCapabilities(description,assessment=null){const caps=description.capabilities??{},valid=new Set(assessment?.validEvidence??[]);return Object.freeze({resourceKey:description.resourceKey,atomicDomain:description.atomicDomain,conditionalWrite:caps.conditionalWrite?(caps.strongRevision?'strong-validator':'conditional-write-unknown-strength'):undefined,idempotency:caps.idempotency?'driver-idempotency':undefined,reconciliation:caps.reconciliation===true,compensation:false,reversible:false,remoteFencing:caps.remoteFencing?'declared':undefined,mutation:'DRIVER',qualification:Object.freeze({...(valid.has('conditional-write')?{conditionalWrite:'provider-verified'}:{}),...(valid.has('remote-fencing')?{remoteFencing:'provider-verified'}:{}),...(valid.has('idempotency')?{idempotency:'provider-verified'}:{}),...(valid.has('reconciliation')?{reconciliation:'provider-verified'}:{})})})}
+
+function createDriverSagaHandler({store,provider,driver,qualifier,now}){
+  const description=driver.describe(),planPrefix=`driver-plan:${provider.id}:`;
+  async function planKey(idempotencyKey){return`${planPrefix}${await sha256Hex({namespace:'pact-driver-plan-v1',provider:provider.id,idempotencyKey})}`}
+  async function prepare(input,idempotencyKey){if(!isPlainObject(input)||!isPlainObject(input.intent))fail('PACT_PROVIDER_REGISTRY_INTENT_REQUIRED');const inputHash=await sha256Hex({provider:provider.id,input}),key=await planKey(idempotencyKey),existing=await store.get(key);if(existing){if(!isPlainObject(existing)||existing.version!==0||existing.inputHash!==inputHash||existing.idempotencyKey!==idempotencyKey||!isPlainObject(existing.plan))fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');return clone(existing.plan)}const observed=await driver.read();const plan=await driver.plan({intent:clone(input.intent),observed:clone(observed)});await driver.precondition({observed:clone(observed),plan:clone(plan)});const record={version:0,inputHash,idempotencyKey,plan:clone(plan)};if(await store.create(key,record))return clone(plan);const raced=await store.get(key);if(!isPlainObject(raced)||raced.inputHash!==inputHash||raced.idempotencyKey!==idempotencyKey)fail('PACT_PROVIDER_REGISTRY_IDEMPOTENCY_CONFLICT');return clone(raced.plan)}
+  async function assessment(){const evidence=[];for(const probe of DRIVER_PROBES){const item=await qualifier.inspectQualification(provider.id,probe);if(item)evidence.push(item)}const binding={providerId:description.providerId,driverId:description.driverId,driverVersion:description.driverVersion,configDigest:description.configDigest};return deriveProviderAssurance({binding,description,evidence,now})}
+  async function policy(operation){const evaluated=evaluateProviderPolicy({operation,minimumAssurance:provider.minimumAssurance,providerAssurance:await assessment()});return assertProviderPolicy(evaluated)}
+  const mapClassification=value=>value==='COMMITTED'?'committed':value==='NOT_COMMITTED'?'not_committed':'uncertain';
+  const handler={
+    capabilities:driverCapabilities(description),
+    async getCapabilities(){return driverCapabilities(description,await assessment())},
+    async assertProviderOperation(operation){return policy(operation)},
+    async execute({input,idempotencyKey,fence}){const plan=await prepare(input,idempotencyKey);try{const providerResult=await driver.commit({plan:clone(plan),authorization:{authorizationId:idempotencyKey},idempotencyKey,fence:clone(fence)});return{provider:provider.id,resourceKey:provider.resourceKey,driver:{id:driver.id,version:driver.version},providerResult:clone(providerResult)}}catch(error){if(/UNCERTAIN/.test(String(error?.message)))error.uncertain=true;throw error}},
+    async verify({input,idempotencyKey,result}){const plan=await prepare(input,idempotencyKey);let observed;try{observed=await driver.observe({plan:clone(plan),providerResult:clone(result?.providerResult)})}catch{return false}return driver.verify({plan:clone(plan),observed:clone(observed),providerResult:clone(result?.providerResult)})},
+    async reconcile({input,idempotencyKey}){const plan=await prepare(input,idempotencyKey);const result=await driver.reconcile({plan:clone(plan),idempotencyKey});return mapClassification(result?.classification)},
+    async recoveryEvidence({input,idempotencyKey,phase}){const plan=await prepare(input,idempotencyKey);let observed=null,classification='UNRESOLVED';try{observed=await driver.observe({plan:clone(plan)});const verified=await driver.verify({plan:clone(plan),observed:clone(observed)});classification=verified?'COMMITTED':(observed?.revision===plan?.before?.revision?'NOT_COMMITTED':'DIVERGED')}catch{}const assessed=await assessment();return{provider:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,phase,driver:{id:description.driverId,version:description.driverVersion,configDigest:description.configDigest},assurance:{class:assessed.assurance,evidenceDigest:assessed.evidenceDigest},observedRevision:observed?.revision??null,classification}}
   };
-
-  async function inspectProviders() {
-    const out = [];
-    for (const provider of providers) out.push(publicProvider(provider, await resolvedCapabilities(provider, qualifier)));
-    return Object.freeze(out);
-  }
-
-  async function qualifyConditionalWrite(providerId, probe) {
-    const provider = providerFor(providerId);
-    return qualifier.qualifyConditionalWrite({
-      provider: { id: provider.id, resourceKey: provider.resourceKey, atomicDomain: provider.atomicDomain },
-      probe
-    });
-  }
-
-  async function qualifyRemoteFencing(providerId, generation, probe) {
-    const provider = providerFor(providerId);
-    if (!provider.remoteFencing) fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_UNSUPPORTED');
-    return qualifier.qualifyRemoteFencing({
-      provider: { id: provider.id, resourceKey: provider.resourceKey, atomicDomain: provider.atomicDomain },
-      generation,
-      probe
-    });
-  }
-
-  return Object.freeze({
-    handlers: Object.freeze(handlers),
-    providers: Object.freeze(providers.map(provider => publicProvider(provider))),
-    inspectProviders,
-    qualifyConditionalWrite,
-    qualifyRemoteFencing
-  });
+  return Object.freeze(handler);
 }
 
-export function parsePactProviderRegistryConfig(value) {
-  if (typeof value !== 'string' || value.trim() === '') fail('PACT_PROVIDER_REGISTRY_JSON_REQUIRED');
-  let parsed;
-  try { parsed = JSON.parse(value); } catch { fail('PACT_PROVIDER_REGISTRY_JSON_INVALID'); }
-  if (!isPlainObject(parsed)) fail('PACT_PROVIDER_REGISTRY_INVALID_CONFIG');
-  return parsed;
+function publicDriver(provider,driver){const description=driver.describe();return Object.freeze({id:provider.id,type:provider.type,family:description.family,driverId:description.driverId,driverVersion:description.driverVersion,configDigest:description.configDigest,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,secretConfigured:provider.secretConfigured,minimumAssurance:provider.minimumAssurance,capabilities:driverCapabilities(description)})}
+
+export function createPactProviderRegistry({store,config,env=process.env,fetchImpl=globalThis.fetch,now=()=>Date.now()}={}){
+  assertStore(store);if(typeof fetchImpl!=='function')fail('PACT_PROVIDER_REGISTRY_FETCH_REQUIRED');if(typeof now!=='function')fail('PACT_PROVIDER_REGISTRY_CLOCK_REQUIRED');const providers=normalizeRegistryConfig(config,env),qualifier=createPactProviderQualifier({store,now}),byId=new Map(providers.map(provider=>[provider.id,provider])),handlers={},drivers=new Map();
+  for(const provider of providers){if(provider.type==='rest-json')handlers[provider.id]=createRestSagaHandler({store,provider,fetchImpl,qualifier});else{const driver=instantiateDriver(provider,{store,fetchImpl});drivers.set(provider.id,driver);handlers[provider.id]=createDriverSagaHandler({store,provider,driver,qualifier,now})}}
+  const providerFor=providerId=>{providerId=nonEmpty(providerId,'PACT_PROVIDER_REGISTRY_PROVIDER_ID_REQUIRED',256);const provider=byId.get(providerId);if(!provider)fail(`PACT_PROVIDER_REGISTRY_PROVIDER_NOT_FOUND:${providerId}`);return provider};
+  async function inspectProviders(){const out=[];for(const provider of providers){if(provider.type==='rest-json')out.push(publicLegacy(provider,await resolvedCapabilities(provider,qualifier));else out.push(publicDriver(provider,drivers.get(provider.id)))}return Object.freeze(out)}
+  async function qualifyConditionalWrite(providerId,probe){const provider=providerFor(providerId),driver=drivers.get(provider.id),description=driver?.describe();return qualifier.qualifyConditionalWrite({provider:{id:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,...(description?{driverId:description.driverId,driverVersion:description.driverVersion,configDigest:description.configDigest}:{})},probe})}
+  async function qualifyRemoteFencing(providerId,generation,probe){const provider=providerFor(providerId);if(provider.type==='rest-json'&&!provider.remoteFencing)fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_UNSUPPORTED');const driver=drivers.get(provider.id),description=driver?.describe();if(driver&&!description.capabilities?.remoteFencing)fail('PACT_PROVIDER_REGISTRY_REMOTE_FENCING_UNSUPPORTED');return qualifier.qualifyRemoteFencing({provider:{id:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,...(description?{driverId:description.driverId,driverVersion:description.driverVersion,configDigest:description.configDigest}:{})},generation,probe})}
+  return Object.freeze({handlers:Object.freeze(handlers),providers:Object.freeze(providers.map(provider=>provider.type==='rest-json'?publicLegacy(provider):publicDriver(provider,drivers.get(provider.id)))),inspectProviders,qualifyConditionalWrite,qualifyRemoteFencing,getDriver(providerId){providerFor(providerId);return drivers.get(providerId)??null}});
 }
+
+export function parsePactProviderRegistryConfig(value){if(typeof value!=='string'||value.trim()==='')fail('PACT_PROVIDER_REGISTRY_JSON_REQUIRED');let parsed;try{parsed=JSON.parse(value)}catch{fail('PACT_PROVIDER_REGISTRY_JSON_INVALID')}if(!isPlainObject(parsed))fail('PACT_PROVIDER_REGISTRY_INVALID_CONFIG');return parsed}

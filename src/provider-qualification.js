@@ -1,219 +1,36 @@
 import { canonicalStringify, sha256Hex } from './engine.js';
 
-const clone = value => value === undefined ? undefined : structuredClone(value);
-const fail = code => { throw new Error(code); };
+const clone=value=>value===undefined?undefined:structuredClone(value);
+const fail=code=>{throw new Error(code)};
+const DEFAULT_TTL_MS=30*24*60*60*1000;
+const HASH=/^[a-f0-9]{64}$/;
+const SAFE_PROBES=new Set(['idempotency','conditional-write','reconciliation','remote-fencing','concurrency','uncertain-commit']);
 
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
+function isPlainObject(value){return Boolean(value)&&typeof value==='object'&&!Array.isArray(value)}
+function nonEmpty(value,code,max=512){if(typeof value!=='string'||value.trim()==='')fail(code);const normalized=value.trim();if(normalized.length>max)fail(code);return normalized}
+function assertStore(store){if(!store||typeof store.get!=='function'||typeof store.create!=='function'||typeof store.compareAndSwap!=='function')fail('PACT_PROVIDER_QUALIFICATION_ATOMIC_STORE_REQUIRED')}
+function assertClock(now){if(typeof now!=='function')fail('PACT_PROVIDER_QUALIFICATION_CLOCK_REQUIRED');const value=now();if(!Number.isFinite(value))fail('PACT_PROVIDER_QUALIFICATION_INVALID_CLOCK');return value}
+function normalizeTtl(ttlMs){if(!Number.isSafeInteger(ttlMs)||ttlMs<60_000||ttlMs>90*24*60*60*1000)fail('PACT_PROVIDER_QUALIFICATION_INVALID_TTL');return ttlMs}
+function same(left,right){return canonicalStringify(left)===canonicalStringify(right)}
 
-function nonEmpty(value, code, max = 512) {
-  if (typeof value !== 'string' || value.trim() === '') fail(code);
-  const normalized = value.trim();
-  if (normalized.length > max) fail(code);
-  return normalized;
-}
+function normalizeBinding(provider,id){const supplied=[provider.driverId,provider.driverVersion,provider.configDigest];if(supplied.every(value=>value==null))return null;if(supplied.some(value=>value==null))fail('PACT_PROVIDER_QUALIFICATION_INCOMPLETE_DRIVER_BINDING');const driverId=nonEmpty(provider.driverId,'PACT_PROVIDER_QUALIFICATION_DRIVER_ID_REQUIRED',256),driverVersion=nonEmpty(provider.driverVersion,'PACT_PROVIDER_QUALIFICATION_DRIVER_VERSION_REQUIRED',128),configDigest=nonEmpty(provider.configDigest,'PACT_PROVIDER_QUALIFICATION_CONFIG_DIGEST_REQUIRED',64).toLowerCase();if(!HASH.test(configDigest))fail('PACT_PROVIDER_QUALIFICATION_CONFIG_DIGEST_INVALID');return Object.freeze({providerId:id,driverId,driverVersion,configDigest})}
+function normalizeProvider(provider){if(!isPlainObject(provider))fail('PACT_PROVIDER_QUALIFICATION_PROVIDER_REQUIRED');const id=nonEmpty(provider.id,'PACT_PROVIDER_QUALIFICATION_PROVIDER_ID_REQUIRED',256);return Object.freeze({id,resourceKey:nonEmpty(provider.resourceKey,'PACT_PROVIDER_QUALIFICATION_RESOURCE_KEY_REQUIRED'),atomicDomain:nonEmpty(provider.atomicDomain,'PACT_PROVIDER_QUALIFICATION_ATOMIC_DOMAIN_REQUIRED',256),binding:normalizeBinding(provider,id)})}
+function normalizeObservation(value,code){if(!isPlainObject(value))fail(code);const revision=nonEmpty(value.revision,code,512);if(!Object.prototype.hasOwnProperty.call(value,'state'))fail(code);try{JSON.stringify(value.state)}catch{fail(code)}return{revision,state:clone(value.state)}}
+async function stateHash(state){return sha256Hex({namespace:'pact-provider-qualification-state-v1',state})}
+function validateProbeResult(value,code){if(!isPlainObject(value)||typeof value.accepted!=='boolean')fail(code);if(value.status!=null&&(!Number.isSafeInteger(value.status)||value.status<100||value.status>599))fail(code);return{accepted:value.accepted,status:value.status??null}}
+function evidenceBody(record){const{version,evidenceHash,...body}=record;return body}
+function bindingMatches(record,provider){return !provider.binding||(record.binding&&same(record.binding,provider.binding))}
 
-function assertStore(store) {
-  if (!store || typeof store.get !== 'function' || typeof store.create !== 'function' || typeof store.compareAndSwap !== 'function') {
-    fail('PACT_PROVIDER_QUALIFICATION_ATOMIC_STORE_REQUIRED');
-  }
-}
+async function validateStoredEvidence(record,expectedProvider,expectedProbeType){if(!isPlainObject(record)||!Number.isSafeInteger(record.version)||record.version<0||record.status!=='provider-verified'||record.providerId!==expectedProvider.id||record.resourceKey!==expectedProvider.resourceKey||record.atomicDomain!==expectedProvider.atomicDomain||record.probeType!==expectedProbeType||typeof record.evidenceHash!=='string'||!HASH.test(record.evidenceHash)||!Number.isFinite(record.completedAt)||!Number.isFinite(record.expiresAt)||record.expiresAt<=record.completedAt)fail('PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE');if(expectedProvider.binding&&!bindingMatches(record,expectedProvider))fail('PACT_PROVIDER_QUALIFICATION_DRIVER_BINDING_MISMATCH');const expectedHash=await sha256Hex({namespace:'pact-provider-qualification-evidence-v1',evidence:evidenceBody(record)});if(expectedHash!==record.evidenceHash)fail('PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE');return clone(record)}
 
-function assertClock(now) {
-  if (typeof now !== 'function') fail('PACT_PROVIDER_QUALIFICATION_CLOCK_REQUIRED');
-  const value = now();
-  if (!Number.isFinite(value)) fail('PACT_PROVIDER_QUALIFICATION_INVALID_CLOCK');
-  return value;
-}
+export function createPactProviderQualifier({store,now=()=>Date.now(),ttlMs=DEFAULT_TTL_MS}={}){
+  assertStore(store);assertClock(now);ttlMs=normalizeTtl(ttlMs);
+  const keyFor=async(providerId,probeType)=>{providerId=nonEmpty(providerId,'PACT_PROVIDER_QUALIFICATION_PROVIDER_ID_REQUIRED',256);probeType=nonEmpty(probeType,'PACT_PROVIDER_QUALIFICATION_PROBE_TYPE_REQUIRED',64);const digest=await sha256Hex({namespace:'pact-provider-qualification-key-v1',providerId,probeType});return`provider-qualification:${digest}`};
+  async function persist(provider,probeType,body){const evidenceHash=await sha256Hex({namespace:'pact-provider-qualification-evidence-v1',evidence:body}),initial={version:0,...clone(body),evidenceHash},key=await keyFor(provider.id,probeType);if(await store.create(key,initial)){const{version,...publicEvidence}=initial;return clone(publicEvidence)}const existing=await validateStoredEvidence(await store.get(key),{...provider,binding:null},probeType),timestamp=assertClock(now);if(bindingMatches(existing,provider)&&existing.expiresAt>timestamp){const{version,...publicEvidence}=existing;return clone(publicEvidence)}const replacement={...initial,version:existing.version+1};if(!await store.compareAndSwap(key,existing.version,replacement))fail('PACT_PROVIDER_QUALIFICATION_CONFLICT');const{version,...publicEvidence}=replacement;return clone(publicEvidence)}
+  async function inspectQualification(providerId,probeType){const id=nonEmpty(providerId,'PACT_PROVIDER_QUALIFICATION_PROVIDER_ID_REQUIRED',256);probeType=nonEmpty(probeType,'PACT_PROVIDER_QUALIFICATION_PROBE_TYPE_REQUIRED',64);const record=await store.get(await keyFor(id,probeType));if(!record)return null;const expected={id,resourceKey:nonEmpty(record.resourceKey,'PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE'),atomicDomain:nonEmpty(record.atomicDomain,'PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE'),binding:null},validated=await validateStoredEvidence(record,expected,probeType);if(validated.expiresAt<=assertClock(now))return null;const{version,...publicEvidence}=validated;return clone(publicEvidence)}
+  async function recordVerifiedProbe({provider:rawProvider,probeType,attestation}={}){const provider=normalizeProvider(rawProvider);probeType=nonEmpty(probeType,'PACT_PROVIDER_QUALIFICATION_PROBE_TYPE_REQUIRED',64);if(!SAFE_PROBES.has(probeType))fail('PACT_PROVIDER_QUALIFICATION_PROBE_TYPE_UNSUPPORTED');if(!isPlainObject(attestation)||attestation.suite!=='pact.provider-qualification.v1'||typeof attestation.releaseSha!=='string'||!/^[a-f0-9]{40}$/.test(attestation.releaseSha)||/^0{40}$/.test(attestation.releaseSha)||typeof attestation.targetId!=='string'||!attestation.targetId||typeof attestation.scenarioDigest!=='string'||!HASH.test(attestation.scenarioDigest))fail('PACT_PROVIDER_QUALIFICATION_ATTESTATION_REQUIRED');const startedAt=Number.isFinite(attestation.startedAt)?attestation.startedAt:assertClock(now),completedAt=assertClock(now);if(startedAt>completedAt)fail('PACT_PROVIDER_QUALIFICATION_ATTESTATION_TIME_INVALID');return persist(provider,probeType,{schema:1,status:'provider-verified',providerId:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,probeType,binding:provider.binding,startedAt,completedAt,expiresAt:completedAt+ttlMs,attestation:clone(attestation)})}
 
-function normalizeProvider(provider) {
-  if (!isPlainObject(provider)) fail('PACT_PROVIDER_QUALIFICATION_PROVIDER_REQUIRED');
-  return Object.freeze({
-    id: nonEmpty(provider.id, 'PACT_PROVIDER_QUALIFICATION_PROVIDER_ID_REQUIRED', 256),
-    resourceKey: nonEmpty(provider.resourceKey, 'PACT_PROVIDER_QUALIFICATION_RESOURCE_KEY_REQUIRED'),
-    atomicDomain: nonEmpty(provider.atomicDomain, 'PACT_PROVIDER_QUALIFICATION_ATOMIC_DOMAIN_REQUIRED', 256)
-  });
-}
-
-function normalizeObservation(value, code) {
-  if (!isPlainObject(value)) fail(code);
-  const revision = nonEmpty(value.revision, code, 512);
-  if (!Object.prototype.hasOwnProperty.call(value, 'state')) fail(code);
-  try {
-    JSON.stringify(value.state);
-  } catch {
-    fail(code);
-  }
-  return { revision, state: clone(value.state) };
-}
-
-function same(left, right) {
-  return canonicalStringify(left) === canonicalStringify(right);
-}
-
-async function stateHash(state) {
-  return sha256Hex({ namespace: 'pact-provider-qualification-state-v1', state });
-}
-
-function validateProbeResult(value, code) {
-  if (!isPlainObject(value) || typeof value.accepted !== 'boolean') fail(code);
-  if (value.status != null && (!Number.isSafeInteger(value.status) || value.status < 100 || value.status > 599)) fail(code);
-  return { accepted: value.accepted, status: value.status ?? null };
-}
-
-function evidenceBody(record) {
-  const { version, evidenceHash, ...body } = record;
-  return body;
-}
-
-async function validateStoredEvidence(record, expectedProvider, expectedProbeType) {
-  if (!isPlainObject(record) || record.version !== 0 || record.status !== 'provider-verified' ||
-      record.providerId !== expectedProvider.id || record.resourceKey !== expectedProvider.resourceKey ||
-      record.atomicDomain !== expectedProvider.atomicDomain || record.probeType !== expectedProbeType ||
-      typeof record.evidenceHash !== 'string' || !/^[a-f0-9]{64}$/.test(record.evidenceHash)) {
-    fail('PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE');
-  }
-  const expectedHash = await sha256Hex({ namespace: 'pact-provider-qualification-evidence-v1', evidence: evidenceBody(record) });
-  if (expectedHash !== record.evidenceHash) fail('PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE');
-  const { version, ...publicEvidence } = record;
-  return clone(publicEvidence);
-}
-
-export function createPactProviderQualifier({ store, now = () => Date.now() } = {}) {
-  assertStore(store);
-  assertClock(now);
-
-  const keyFor = async (providerId, probeType) => {
-    providerId = nonEmpty(providerId, 'PACT_PROVIDER_QUALIFICATION_PROVIDER_ID_REQUIRED', 256);
-    probeType = nonEmpty(probeType, 'PACT_PROVIDER_QUALIFICATION_PROBE_TYPE_REQUIRED', 64);
-    const digest = await sha256Hex({ namespace: 'pact-provider-qualification-key-v1', providerId, probeType });
-    return `provider-qualification:${digest}`;
-  };
-
-  async function persist(provider, probeType, body) {
-    const evidenceHash = await sha256Hex({ namespace: 'pact-provider-qualification-evidence-v1', evidence: body });
-    const record = { version: 0, ...clone(body), evidenceHash };
-    const key = await keyFor(provider.id, probeType);
-    if (await store.create(key, record)) {
-      const { version, ...publicEvidence } = record;
-      return clone(publicEvidence);
-    }
-    const existing = await store.get(key);
-    const validated = await validateStoredEvidence(existing, provider, probeType);
-    if (validated.status === 'provider-verified') return validated;
-    fail('PACT_PROVIDER_QUALIFICATION_CONFLICT');
-  }
-
-  async function inspectQualification(providerId, probeType) {
-    const provider = { id: nonEmpty(providerId, 'PACT_PROVIDER_QUALIFICATION_PROVIDER_ID_REQUIRED', 256) };
-    probeType = nonEmpty(probeType, 'PACT_PROVIDER_QUALIFICATION_PROBE_TYPE_REQUIRED', 64);
-    const record = await store.get(await keyFor(provider.id, probeType));
-    if (!record) return null;
-    const expectedProvider = {
-      id: provider.id,
-      resourceKey: nonEmpty(record.resourceKey, 'PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE'),
-      atomicDomain: nonEmpty(record.atomicDomain, 'PACT_PROVIDER_QUALIFICATION_CORRUPT_EVIDENCE')
-    };
-    return validateStoredEvidence(record, expectedProvider, probeType);
-  }
-
-  async function qualifyConditionalWrite({ provider: rawProvider, probe } = {}) {
-    const provider = normalizeProvider(rawProvider);
-    if (!isPlainObject(probe) || typeof probe.read !== 'function' || typeof probe.advance !== 'function' || typeof probe.attemptStaleWrite !== 'function') {
-      fail('PACT_PROVIDER_QUALIFICATION_CONDITIONAL_PROBE_REQUIRED');
-    }
-    const existing = await inspectQualification(provider.id, 'conditional-write');
-    if (existing) {
-      if (existing.resourceKey !== provider.resourceKey || existing.atomicDomain !== provider.atomicDomain) fail('PACT_PROVIDER_QUALIFICATION_PROVIDER_BINDING_MISMATCH');
-      return existing;
-    }
-
-    const startedAt = assertClock(now);
-    const before = normalizeObservation(await probe.read(), 'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION');
-    const qualified = normalizeObservation(await probe.advance({ before: clone(before) }), 'PACT_PROVIDER_QUALIFICATION_INVALID_ADVANCE');
-    if (qualified.revision === before.revision) fail('PACT_PROVIDER_QUALIFICATION_REVISION_DID_NOT_ADVANCE');
-
-    const stale = validateProbeResult(await probe.attemptStaleWrite({
-      staleRevision: before.revision,
-      before: clone(before),
-      qualified: clone(qualified)
-    }), 'PACT_PROVIDER_QUALIFICATION_INVALID_STALE_PROBE_RESULT');
-    if (stale.accepted) fail('PACT_PROVIDER_QUALIFICATION_STALE_WRITE_ACCEPTED');
-
-    const observed = normalizeObservation(await probe.read(), 'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION');
-    const canonicalUnchanged = observed.revision === qualified.revision && same(observed.state, qualified.state);
-    if (!canonicalUnchanged) fail('PACT_PROVIDER_QUALIFICATION_CANONICAL_STATE_CHANGED');
-
-    const completedAt = assertClock(now);
-    return persist(provider, 'conditional-write', {
-      schema: 1,
-      status: 'provider-verified',
-      providerId: provider.id,
-      resourceKey: provider.resourceKey,
-      atomicDomain: provider.atomicDomain,
-      probeType: 'conditional-write',
-      startedAt,
-      completedAt,
-      beforeRevision: before.revision,
-      qualifiedRevision: qualified.revision,
-      staleProbeAccepted: stale.accepted,
-      staleProbeStatus: stale.status,
-      canonicalUnchanged,
-      beforeStateHash: await stateHash(before.state),
-      qualifiedStateHash: await stateHash(qualified.state),
-      observedStateHash: await stateHash(observed.state)
-    });
-  }
-
-  async function qualifyRemoteFencing({ provider: rawProvider, generation, probe } = {}) {
-    const provider = normalizeProvider(rawProvider);
-    if (!Number.isSafeInteger(generation) || generation < 1 || generation >= Number.MAX_SAFE_INTEGER) {
-      fail('PACT_PROVIDER_QUALIFICATION_INVALID_FENCE_GENERATION');
-    }
-    if (!isPlainObject(probe) || typeof probe.apply !== 'function' || typeof probe.read !== 'function') {
-      fail('PACT_PROVIDER_QUALIFICATION_FENCING_PROBE_REQUIRED');
-    }
-    const existing = await inspectQualification(provider.id, 'remote-fencing');
-    if (existing) {
-      if (existing.resourceKey !== provider.resourceKey || existing.atomicDomain !== provider.atomicDomain) fail('PACT_PROVIDER_QUALIFICATION_PROVIDER_BINDING_MISMATCH');
-      return existing;
-    }
-
-    const startedAt = assertClock(now);
-    const qualifiedGeneration = generation + 1;
-    const newer = validateProbeResult(await probe.apply({ generation: qualifiedGeneration }), 'PACT_PROVIDER_QUALIFICATION_INVALID_FENCE_PROBE_RESULT');
-    if (!newer.accepted) fail('PACT_PROVIDER_QUALIFICATION_NEW_FENCE_REJECTED');
-    const qualified = normalizeObservation(await probe.read(), 'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION');
-
-    const stale = validateProbeResult(await probe.apply({ generation }), 'PACT_PROVIDER_QUALIFICATION_INVALID_FENCE_PROBE_RESULT');
-    if (stale.accepted) fail('PACT_PROVIDER_QUALIFICATION_STALE_FENCE_ACCEPTED');
-    const observed = normalizeObservation(await probe.read(), 'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION');
-    const canonicalUnchanged = observed.revision === qualified.revision && same(observed.state, qualified.state);
-    if (!canonicalUnchanged) fail('PACT_PROVIDER_QUALIFICATION_CANONICAL_STATE_CHANGED');
-
-    const completedAt = assertClock(now);
-    return persist(provider, 'remote-fencing', {
-      schema: 1,
-      status: 'provider-verified',
-      providerId: provider.id,
-      resourceKey: provider.resourceKey,
-      atomicDomain: provider.atomicDomain,
-      probeType: 'remote-fencing',
-      startedAt,
-      completedAt,
-      qualifiedGeneration,
-      staleGeneration: generation,
-      qualifiedProbeStatus: newer.status,
-      staleProbeAccepted: stale.accepted,
-      staleProbeStatus: stale.status,
-      qualifiedRevision: qualified.revision,
-      observedRevision: observed.revision,
-      canonicalUnchanged,
-      qualifiedStateHash: await stateHash(qualified.state),
-      observedStateHash: await stateHash(observed.state)
-    });
-  }
-
-  return Object.freeze({ qualifyConditionalWrite, qualifyRemoteFencing, inspectQualification });
+  async function qualifyConditionalWrite({provider:rawProvider,probe}={}){const provider=normalizeProvider(rawProvider);if(!isPlainObject(probe)||typeof probe.read!=='function'||typeof probe.advance!=='function'||typeof probe.attemptStaleWrite!=='function')fail('PACT_PROVIDER_QUALIFICATION_CONDITIONAL_PROBE_REQUIRED');const existing=await inspectQualification(provider.id,'conditional-write');if(existing){if(existing.resourceKey!==provider.resourceKey||existing.atomicDomain!==provider.atomicDomain)fail('PACT_PROVIDER_QUALIFICATION_PROVIDER_BINDING_MISMATCH');if(bindingMatches(existing,provider))return existing}const startedAt=assertClock(now),before=normalizeObservation(await probe.read(),'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION'),qualified=normalizeObservation(await probe.advance({before:clone(before)}),'PACT_PROVIDER_QUALIFICATION_INVALID_ADVANCE');if(qualified.revision===before.revision)fail('PACT_PROVIDER_QUALIFICATION_REVISION_DID_NOT_ADVANCE');const stale=validateProbeResult(await probe.attemptStaleWrite({staleRevision:before.revision,before:clone(before),qualified:clone(qualified)}),'PACT_PROVIDER_QUALIFICATION_INVALID_STALE_PROBE_RESULT');if(stale.accepted)fail('PACT_PROVIDER_QUALIFICATION_STALE_WRITE_ACCEPTED');const observed=normalizeObservation(await probe.read(),'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION'),canonicalUnchanged=observed.revision===qualified.revision&&same(observed.state,qualified.state);if(!canonicalUnchanged)fail('PACT_PROVIDER_QUALIFICATION_CANONICAL_STATE_CHANGED');const completedAt=assertClock(now);return persist(provider,'conditional-write',{schema:1,status:'provider-verified',providerId:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,probeType:'conditional-write',binding:provider.binding,startedAt,completedAt,expiresAt:completedAt+ttlMs,beforeRevision:before.revision,qualifiedRevision:qualified.revision,staleProbeAccepted:stale.accepted,staleProbeStatus:stale.status,canonicalUnchanged,beforeStateHash:await stateHash(before.state),qualifiedStateHash:await stateHash(qualified.state),observedStateHash:await stateHash(observed.state)})}
+  async function qualifyRemoteFencing({provider:rawProvider,generation,probe}={}){const provider=normalizeProvider(rawProvider);if(!Number.isSafeInteger(generation)||generation<1||generation>=Number.MAX_SAFE_INTEGER)fail('PACT_PROVIDER_QUALIFICATION_INVALID_FENCE_GENERATION');if(!isPlainObject(probe)||typeof probe.apply!=='function'||typeof probe.read!=='function')fail('PACT_PROVIDER_QUALIFICATION_FENCING_PROBE_REQUIRED');const existing=await inspectQualification(provider.id,'remote-fencing');if(existing){if(existing.resourceKey!==provider.resourceKey||existing.atomicDomain!==provider.atomicDomain)fail('PACT_PROVIDER_QUALIFICATION_PROVIDER_BINDING_MISMATCH');if(bindingMatches(existing,provider))return existing}const startedAt=assertClock(now),qualifiedGeneration=generation+1,newer=validateProbeResult(await probe.apply({generation:qualifiedGeneration}),'PACT_PROVIDER_QUALIFICATION_INVALID_FENCE_PROBE_RESULT');if(!newer.accepted)fail('PACT_PROVIDER_QUALIFICATION_NEW_FENCE_REJECTED');const qualified=normalizeObservation(await probe.read(),'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION'),stale=validateProbeResult(await probe.apply({generation}),'PACT_PROVIDER_QUALIFICATION_INVALID_FENCE_PROBE_RESULT');if(stale.accepted)fail('PACT_PROVIDER_QUALIFICATION_STALE_FENCE_ACCEPTED');const observed=normalizeObservation(await probe.read(),'PACT_PROVIDER_QUALIFICATION_INVALID_OBSERVATION'),canonicalUnchanged=observed.revision===qualified.revision&&same(observed.state,qualified.state);if(!canonicalUnchanged)fail('PACT_PROVIDER_QUALIFICATION_CANONICAL_STATE_CHANGED');const completedAt=assertClock(now);return persist(provider,'remote-fencing',{schema:1,status:'provider-verified',providerId:provider.id,resourceKey:provider.resourceKey,atomicDomain:provider.atomicDomain,probeType:'remote-fencing',binding:provider.binding,startedAt,completedAt,expiresAt:completedAt+ttlMs,qualifiedGeneration,staleGeneration:generation,qualifiedProbeStatus:newer.status,staleProbeAccepted:stale.accepted,staleProbeStatus:stale.status,qualifiedRevision:qualified.revision,observedRevision:observed.revision,canonicalUnchanged,qualifiedStateHash:await stateHash(qualified.state),observedStateHash:await stateHash(observed.state)})}
+  return Object.freeze({qualifyConditionalWrite,qualifyRemoteFencing,recordVerifiedProbe,inspectQualification});
 }

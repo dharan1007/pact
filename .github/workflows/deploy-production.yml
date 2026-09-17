@@ -4,15 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       release_sha:
-        description: Exact 40-character PACT commit SHA to promote
+        description: Exact 40-character current-main PACT commit SHA to promote
         required: true
         type: string
-  push:
-    branches: [production-release]
+  workflow_run:
+    workflows: ["self-hosted-qualification"]
+    types: [completed]
 
 permissions:
   contents: read
   checks: read
+  actions: read
 
 env:
   VERCEL_ORG_ID: team_APBZJjf6iizHCTuseqHosFnU
@@ -26,57 +28,31 @@ concurrency:
 
 jobs:
   deploy:
-    name: deploy exact verified release
-    runs-on: ubuntu-latest
+    name: deploy exact self-hosted qualified release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, Linux, X64, production-ci]
+    timeout-minutes: 60
     environment: production
     steps:
-      - name: Read production release request
-        if: github.event_name == 'push'
-        uses: actions/checkout@v4
-        with:
-          ref: production-release
-          fetch-depth: 1
-          sparse-checkout: release-request.json
-          sparse-checkout-cone-mode: false
-
-      - name: Resolve and validate release request
+      - name: Resolve and validate exact qualified release
         id: release
         env:
           PACT_EVENT_NAME: ${{ github.event_name }}
           PACT_DISPATCH_SHA: ${{ inputs.release_sha }}
-          PACT_RELEASE_ACTOR: ${{ github.actor }}
-          PACT_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          PACT_QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require('node:fs');
           const eventName = process.env.PACT_EVENT_NAME;
-          let releaseSha = process.env.PACT_DISPATCH_SHA || '';
-          if (eventName === 'push') {
-            if (process.env.PACT_RELEASE_ACTOR !== process.env.PACT_REPOSITORY_OWNER) {
-              console.error('PACT_RELEASE_PUSH_ACTOR_FORBIDDEN');
-              process.exit(1);
-            }
-            let request;
-            try {
-              request = JSON.parse(fs.readFileSync('release-request.json', 'utf8'));
-            } catch {
-              console.error('PACT_RELEASE_REQUEST_INVALID');
-              process.exit(1);
-            }
-            const valid = request && request.schema === 1
-              && typeof request.releaseSha === 'string'
-              && /^[0-9a-f]{40}$/.test(request.releaseSha)
-              && typeof request.nonce === 'string'
-              && /^[A-Za-z0-9._-]{16,128}$/.test(request.nonce)
-              && Object.keys(request).every(key => ['schema', 'releaseSha', 'nonce'].includes(key));
-            if (!valid) {
-              console.error('PACT_RELEASE_REQUEST_INVALID');
-              process.exit(1);
-            }
-            releaseSha = request.releaseSha;
-          }
+          const releaseSha = eventName === 'workflow_run'
+            ? String(process.env.PACT_QUALIFIED_SHA || '')
+            : String(process.env.PACT_DISPATCH_SHA || '');
           if (!/^[0-9a-f]{40}$/.test(releaseSha)) {
             console.error('PACT_RELEASE_SHA_INVALID');
             process.exit(1);
@@ -86,64 +62,54 @@ jobs:
           NODE
 
       - name: Validate deploy credential
-        env:
-          PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${PACT_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "PACT_RELEASE_SHA_INVALID" >&2
-            exit 1
-          fi
-          if [[ -z "${VERCEL_TOKEN:-}" ]]; then
-            echo "VERCEL_TOKEN_REQUIRED" >&2
-            exit 1
-          fi
+          [[ "${PACT_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || { echo "PACT_RELEASE_SHA_INVALID" >&2; exit 1; }
+          test -n "${VERCEL_TOKEN:-}" || { echo "VERCEL_TOKEN_REQUIRED" >&2; exit 1; }
 
       - name: Check out exact release
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.release.outputs.release_sha }}
           fetch-depth: 0
           clean: true
 
-      - name: Prove checkout is the current hardening head
-        env:
-          PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
+      - name: Prove checkout is the current main head
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${PACT_SOURCE_COMMIT}" || {
-            echo "PACT_RELEASE_CHECKOUT_MISMATCH" >&2
-            exit 1
-          }
-          git fetch --no-tags origin hardening/real-rest-provider-20260905
-          test "${PACT_SOURCE_COMMIT}" = "$(git rev-parse FETCH_HEAD)" || {
-            echo "PACT_RELEASE_NOT_CURRENT_HARDENING_HEAD" >&2
-            exit 1
-          }
+          test "$(git rev-parse HEAD)" = "${PACT_SOURCE_COMMIT}" || { echo "PACT_RELEASE_CHECKOUT_MISMATCH" >&2; exit 1; }
+          git fetch --no-tags origin main
+          test "${PACT_SOURCE_COMMIT}" = "$(git rev-parse FETCH_HEAD)" || { echo "PACT_RELEASE_NOT_CURRENT_MAIN_HEAD" >&2; exit 1; }
 
-      - name: Require successful verification for exact release
+      - name: Require exact-SHA self-hosted verification, real provider corpus and CodeQL
         env:
           GH_TOKEN: ${{ github.token }}
-          PACT_SOURCE_COMMIT: ${{ steps.release.outputs.release_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          successes="$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${PACT_SOURCE_COMMIT}/check-runs" \
-            --jq '[.check_runs[] | select(.name == "verify" and .conclusion == "success")] | length')"
-          if [[ "${successes}" -lt 1 ]]; then
-            echo "PACT_RELEASE_CI_NOT_GREEN" >&2
-            exit 1
-          fi
+          checks="$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${PACT_SOURCE_COMMIT}/check-runs")"
+          verify_ok="$(jq '[.check_runs[] | select(.name == "self-hosted qualification verify" and .conclusion == "success")] | length' <<<"$checks")"
+          corpus_ok="$(jq '[.check_runs[] | select(.name == "self-hosted real provider corpus" and .conclusion == "success")] | length' <<<"$checks")"
+          codeql_ok="$(jq '[.check_runs[] | select(.name == "self-hosted qualification codeql" and .conclusion == "success")] | length' <<<"$checks")"
+          test "$verify_ok" -ge 1 || { echo "PACT_SELF_HOSTED_QUALIFICATION_NOT_GREEN" >&2; exit 1; }
+          test "$corpus_ok" -ge 1 || { echo "PACT_REAL_PROVIDER_CORPUS_NOT_GREEN" >&2; exit 1; }
+          test "$codeql_ok" -ge 1 || { echo "PACT_SELF_HOSTED_CODEQL_NOT_GREEN" >&2; exit 1; }
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
 
       - name: Verify repository before deployment
         run: npm run verify
+
+      - name: Dependency security gate
+        run: npm audit --audit-level=high --omit=dev
 
       - name: Pull production project configuration
         run: npx --yes vercel@59.11.7 pull --yes --environment=production --token="${VERCEL_TOKEN}"
@@ -153,32 +119,21 @@ jobs:
         run: |
           set -euo pipefail
           npx --yes vercel@59.11.7 env pull .pact-production.env --yes --environment=production --token="${VERCEL_TOKEN}"
-          test -s .pact-production.env || {
-            echo "PACT_PRODUCTION_ENV_PULL_FAILED" >&2
-            exit 1
-          }
+          test -s .pact-production.env || { echo "PACT_PRODUCTION_ENV_PULL_FAILED" >&2; exit 1; }
 
       - name: Build production artifact
-        run: npx --yes vercel@59.11.7 build --prod --token="${VERCEL_TOKEN}"
+        run: PACT_SOURCE_COMMIT="$PACT_SOURCE_COMMIT" npx --yes vercel@59.11.7 build --prod --token="${VERCEL_TOKEN}"
 
       - name: Verify exact prebuilt artifact
-        run: npm run verify:prebuilt
+        run: PACT_SOURCE_COMMIT="$PACT_SOURCE_COMMIT" npm run verify:prebuilt
 
       - name: Stage production-configured artifact without assigning production domains
         id: stage
         shell: bash
         run: |
           set -euo pipefail
-          deployment_url="$(
-            npx --yes vercel@59.11.7 deploy --prebuilt --prod --skip-domain \
-              --env PACT_SOURCE_COMMIT=${PACT_SOURCE_COMMIT} \
-              --token="${VERCEL_TOKEN}" \
-              | tail -n 1
-          )"
-          if [[ ! "${deployment_url}" =~ ^https://[^[:space:]]+\.vercel\.app$ ]]; then
-            echo "PACT_STAGED_DEPLOYMENT_URL_INVALID" >&2
-            exit 1
-          fi
+          deployment_url="$(npx --yes vercel@59.11.7 deploy --prebuilt --prod --skip-domain --env PACT_SOURCE_COMMIT=${PACT_SOURCE_COMMIT} --token="${VERCEL_TOKEN}" | tail -n 1)"
+          [[ "${deployment_url}" =~ ^https://[^[:space:]]+\.vercel\.app$ ]] || { echo "PACT_STAGED_DEPLOYMENT_URL_INVALID" >&2; exit 1; }
           echo "deployment_url=${deployment_url}" >> "${GITHUB_OUTPUT}"
 
       - name: Verify immutable staged deployment before promotion
@@ -201,9 +156,7 @@ jobs:
         run: rm -f .pact-production.env
 
       - name: Promote verified staged deployment
-        run: >-
-          npx --yes vercel@59.11.7 promote ${{ steps.stage.outputs.deployment_url }} --yes
-          --token="${VERCEL_TOKEN}"
+        run: npx --yes vercel@59.11.7 promote ${{ steps.stage.outputs.deployment_url }} --yes --token="${VERCEL_TOKEN}"
 
       - name: Verify live production alias after promotion
         env:

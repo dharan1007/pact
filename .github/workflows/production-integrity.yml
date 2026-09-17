@@ -2,7 +2,7 @@ name: production-integrity
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -12,23 +12,40 @@ concurrency:
   group: pact-production-integrity
   cancel-in-progress: true
 
+env:
+  VERCEL_ORG_ID: team_APBZJjf6iizHCTuseqHosFnU
+  VERCEL_PROJECT_ID: prj_4a7E35CAWFjsdq04HieKX5VUvv6V
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
 jobs:
   verify-production:
-    name: verify production matches current hardening head
+    name: verify production matches main and executes a real provider transaction
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
     steps:
-      - name: Check out current hardening head
-        uses: actions/checkout@v4
+      - name: Check out current main head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: hardening/real-rest-provider-20260905
+          ref: main
           fetch-depth: 1
+          clean: true
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
-      - name: Bind expected production release to checked-out hardening head
+      - name: Validate production monitor credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${VERCEL_TOKEN:-}" ]]; then
+            echo "VERCEL_TOKEN_REQUIRED" >&2
+            exit 1
+          fi
+
+      - name: Bind expected production release to checked-out main head
         shell: bash
         run: |
           set -euo pipefail
@@ -42,3 +59,33 @@ jobs:
 
       - name: Verify live production release identity and authority surface
         run: npm run verify:production
+
+      - name: Pull production project configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes vercel@59.11.7 pull --yes --environment=production --token="${VERCEL_TOKEN}"
+
+      - name: Pull production smoke configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes vercel@59.11.7 env pull .pact-production.env --yes --environment=production --token="${VERCEL_TOKEN}"
+          test -s .pact-production.env || {
+            echo "PACT_PRODUCTION_ENV_PULL_FAILED" >&2
+            exit 1
+          }
+
+      - name: Execute real provider transaction against canonical production
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --env-file=.pact-production.env scripts/verify-production-smoke.mjs
+
+      - name: Re-verify production identity after real transaction
+        run: npm run verify:production
+
+      - name: Remove pulled production environment
+        if: always()
+        shell: bash
+        run: rm -f .pact-production.env

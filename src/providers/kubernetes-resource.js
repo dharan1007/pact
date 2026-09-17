@@ -1,0 +1,53 @@
+import { createHash } from 'node:crypto';
+import { canonicalStringify } from '../engine.js';
+import { definePactProviderDriver } from '../provider-driver.js';
+
+const fail=code=>{throw new Error(code)};
+const clone=value=>value===undefined?undefined:structuredClone(value);
+const isObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
+const FORBIDDEN_SEGMENTS=new Set(['__proto__','prototype','constructor']);
+const IMMUTABLE_PATHS=new Set(['apiVersion','kind','metadata.name','metadata.namespace','metadata.resourceVersion']);
+
+function nonEmpty(value,code,max=2048){if(typeof value!=='string'||!value.trim())fail(code);const result=value.trim();if(result.length>max)fail(code);return result;}
+function same(a,b){return canonicalStringify(a)===canonicalStringify(b)};
+function digest(value){return createHash('sha256').update(canonicalStringify(value)).digest('hex');}
+function normalizeBaseUrl(value){let url;try{url=new URL(value)}catch{fail('PACT_K8S_INVALID_BASE_URL')}if(url.protocol!=='https:')fail('PACT_K8S_REQUIRES_HTTPS');url.pathname=url.pathname.replace(/\/$/,'');url.search='';url.hash='';return url;}
+function resolveUrl(base,path){path=nonEmpty(path,'PACT_K8S_RESOURCE_PATH_REQUIRED');let url;try{url=new URL(path,`${base.toString().replace(/\/$/,'')}/`)}catch{fail('PACT_K8S_INVALID_RESOURCE_PATH')}if(url.origin!==base.origin)fail('PACT_K8S_CROSS_ORIGIN_RESOURCE');return url.toString();}
+async function json(response,code){const text=await response.text();if(!text)fail(code);let value;try{value=JSON.parse(text)}catch{fail(code)}if(!isObject(value))fail(code);return value;}
+function revisionOf(resource){const revision=resource?.metadata?.resourceVersion;if(typeof revision!=='string'||!revision.trim())fail('PACT_K8S_RESOURCE_VERSION_REQUIRED');return revision.trim();}
+function pathOf(value){if(!Array.isArray(value)||value.length<1||value.length>32)fail('PACT_K8S_PATH_REQUIRED');const parts=value.map(part=>{if(typeof part!=='string'||!part||part.length>128||FORBIDDEN_SEGMENTS.has(part)||part.includes('.'))fail('PACT_K8S_UNSAFE_PATH');return part});const key=parts.join('.');if(IMMUTABLE_PATHS.has(key))fail('PACT_K8S_IMMUTABLE_IDENTITY_PATH');return parts;}
+function pathsOverlap(left,right){const count=Math.min(left.length,right.length);for(let i=0;i<count;i+=1)if(left[i]!==right[i])return false;return true;}
+function operations(intent){
+  if(!isObject(intent))fail('PACT_K8S_INTENT_REQUIRED');
+  const raw=Array.isArray(intent.operations)?intent.operations:[{path:intent.path,value:intent.value}];
+  if(raw.length<1||raw.length>256)fail('PACT_K8S_OPERATIONS_REQUIRED');
+  const normalized=[];
+  for(const entry of raw){
+    if(!isObject(entry)||!Object.prototype.hasOwnProperty.call(entry,'value'))fail('PACT_K8S_INVALID_OPERATION');
+    const path=pathOf(entry.path);
+    for(const prior of normalized){if(pathsOverlap(prior.path,path))fail(prior.path.length===path.length?'PACT_K8S_DUPLICATE_OPERATION_PATH':'PACT_K8S_OVERLAPPING_OPERATION_PATH');}
+    let value;try{value=JSON.parse(JSON.stringify(entry.value))}catch{fail('PACT_K8S_VALUE_MUST_BE_JSON')}
+    normalized.push({path,value});
+  }
+  return normalized;
+}
+function applyIntent(resource,intent){const next=clone(resource),effects=[];for(const op of operations(intent)){let cursor=next;for(const part of op.path.slice(0,-1)){if(!isObject(cursor)||!Object.prototype.hasOwnProperty.call(cursor,part))fail('PACT_K8S_EFFECT_PATH_MISSING');cursor=cursor[part];}const leaf=op.path.at(-1);if(!isObject(cursor)||!Object.prototype.hasOwnProperty.call(cursor,leaf))fail('PACT_K8S_EFFECT_PATH_MISSING');const before=clone(cursor[leaf]);cursor[leaf]=clone(op.value);effects.push({path:op.path.join('.'),before,after:clone(op.value)});}return{next,effects};}
+function desiredMatches(actual,desired){if(!isObject(actual)||!isObject(desired))return false;const normalized=clone(desired);if(isObject(normalized.metadata)&&isObject(actual.metadata))normalized.metadata.resourceVersion=actual.metadata.resourceVersion;return same(actual,normalized);}
+
+export function createKubernetesResourceDriver({id,version='1.0.0',providerId,baseUrl,resourcePath,fetchImpl=globalThis.fetch,bearerToken='',headers={},resourceKey,atomicDomain}={}){
+  id=nonEmpty(id,'PACT_K8S_DRIVER_ID_REQUIRED',128);version=nonEmpty(version,'PACT_K8S_DRIVER_VERSION_REQUIRED',64);providerId=nonEmpty(providerId,'PACT_K8S_PROVIDER_ID_REQUIRED',256);resourceKey=nonEmpty(resourceKey,'PACT_K8S_RESOURCE_KEY_REQUIRED',512);atomicDomain=nonEmpty(atomicDomain,'PACT_K8S_ATOMIC_DOMAIN_REQUIRED',256);if(typeof fetchImpl!=='function')fail('PACT_K8S_FETCH_REQUIRED');if(headers==null||!isObject(headers))fail('PACT_K8S_HEADERS_INVALID');
+  const base=normalizeBaseUrl(baseUrl),url=resolveUrl(base,resourcePath);const auth=typeof bearerToken==='string'&&bearerToken.trim()?`Bearer ${bearerToken.trim()}`:null;const staticHeaders={...headers,...(auth?{authorization:auth}:{})};
+  const configDigest=digest({family:'kubernetes-resource-version',id,version,providerId,baseUrl:base.toString(),resourcePath,resourceKey,atomicDomain});
+  async function readResource(){let response;try{response=await fetchImpl(url,{method:'GET',headers:{accept:'application/json',...staticHeaders}})}catch(cause){throw new Error('PACT_K8S_PROVIDER_READ_FAILED',{cause})}if(!response?.ok){const error=new Error(`PACT_K8S_PROVIDER_HTTP_${response?.status??0}`);error.status=response?.status??0;throw error}const resource=await json(response,'PACT_K8S_INVALID_PROVIDER_RESPONSE');const revision=revisionOf(resource);return{revision,state:resource};}
+  const driver={id,version,
+    describe(){return Object.freeze({providerId,driverId:id,driverVersion:version,configDigest,resourceKey,atomicDomain,family:'kubernetes-resource-version',capabilities:Object.freeze({idempotency:false,conditionalWrite:true,strongRevision:true,reconciliation:true,stateReplacement:true,remoteFencing:false})});},
+    async read(){return clone(await readResource());},
+    async plan({intent,observed}={}){if(!isObject(observed?.state)||typeof observed.revision!=='string')fail('PACT_K8S_OBSERVED_STATE_REQUIRED');if(revisionOf(observed.state)!==observed.revision)fail('PACT_K8S_OBSERVED_REVISION_MISMATCH');const {next,effects}=applyIntent(observed.state,intent);next.metadata={...next.metadata,resourceVersion:observed.revision};return Object.freeze({providerId,driverId:id,driverVersion:version,intent:clone(intent),before:clone(observed),command:clone(next),effects,invariants:[{path:'metadata.resourceVersion',equals:observed.revision}]});},
+    async precondition({observed,plan}={}){if(!isObject(observed)||!isObject(plan?.before)||observed.revision!==plan.before.revision||!same(observed.state,plan.before.state))fail('PACT_K8S_PRECONDITION_MISMATCH');return{kind:'kubernetes-resourceVersion',resourceVersion:observed.revision};},
+    async commit({plan,authorization,idempotencyKey}={}){if(!isObject(plan?.command)||!isObject(plan?.before))fail('PACT_K8S_PLAN_REQUIRED');if(!isObject(authorization)||typeof authorization.authorizationId!=='string'||!authorization.authorizationId)fail('PACT_K8S_AUTHORIZATION_REQUIRED');if(typeof idempotencyKey!=='string'||!idempotencyKey||authorization.authorizationId!==idempotencyKey)fail('PACT_K8S_AUTHORIZATION_BINDING_MISMATCH');let response;try{response=await fetchImpl(url,{method:'PUT',headers:{accept:'application/json','content-type':'application/json',...staticHeaders,'x-pact-idempotency-key':idempotencyKey},body:JSON.stringify(plan.command)})}catch(cause){throw new Error('PACT_K8S_COMMIT_UNCERTAIN',{cause})}if(response?.status===409)fail('PACT_K8S_STALE_PROVIDER_STATE');if((response?.status??0)>=500){const error=new Error('PACT_K8S_COMMIT_UNCERTAIN');error.status=response.status;throw error}if(!response?.ok){const error=new Error(`PACT_K8S_PROVIDER_HTTP_${response?.status??0}`);error.status=response?.status??0;throw error}const state=await json(response,'PACT_K8S_INVALID_PROVIDER_RESPONSE');const revision=revisionOf(state);if(!desiredMatches(state,plan.command))fail('PACT_K8S_PROVIDER_POSTCONDITION_FAILED');return{revision,state};},
+    async observe(){return clone(await readResource());},
+    async verify({plan,observed}={}){return Boolean(isObject(plan?.command)&&isObject(observed?.state)&&desiredMatches(observed.state,plan.command));},
+    async reconcile({plan}={}){if(!isObject(plan?.before)||!isObject(plan?.command))return{classification:'UNRESOLVED'};let observed;try{observed=await readResource()}catch{return{classification:'UNRESOLVED'}}if(desiredMatches(observed.state,plan.command))return{classification:'COMMITTED'};if(observed.revision===plan.before.revision&&same(observed.state,plan.before.state))return{classification:'NOT_COMMITTED'};return{classification:'DIVERGED'};}
+  };
+  return definePactProviderDriver(driver);
+}

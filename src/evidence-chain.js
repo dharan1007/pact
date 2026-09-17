@@ -48,18 +48,7 @@ function normalizeEventInput(raw) {
 }
 
 async function eventHash({ sagaId, planHash, sequence, previousHash, type, occurredAt, stepId, actor, payload }) {
-  return sha256Hex({
-    namespace: NAMESPACE,
-    sagaId,
-    planHash,
-    sequence,
-    previousHash,
-    type,
-    occurredAt,
-    stepId,
-    actor,
-    payload
-  });
+  return sha256Hex({ namespace: NAMESPACE, sagaId, planHash, sequence, previousHash, type, occurredAt, stepId, actor, payload });
 }
 
 function validateChainShape(chain) {
@@ -81,17 +70,9 @@ export async function verifyEvidenceChain(chain) {
     if (index === 0) {
       if (event.previousHash !== null) fail('PACT_EVIDENCE_PREVIOUS_HASH_MISMATCH');
       if (event.type !== GENESIS_TYPE) fail('PACT_EVIDENCE_GENESIS_TYPE_INVALID');
-    } else if (event.previousHash !== previousHash) {
-      fail('PACT_EVIDENCE_PREVIOUS_HASH_MISMATCH');
-    }
+    } else if (event.previousHash !== previousHash) fail('PACT_EVIDENCE_PREVIOUS_HASH_MISMATCH');
     const input = normalizeEventInput(event);
-    const expected = await eventHash({
-      sagaId: normalized.sagaId,
-      planHash: normalized.planHash,
-      sequence: index,
-      previousHash: event.previousHash,
-      ...input
-    });
+    const expected = await eventHash({ sagaId: normalized.sagaId, planHash: normalized.planHash, sequence: index, previousHash: event.previousHash, ...input });
     if (event.eventHash !== expected) fail('PACT_EVIDENCE_HASH_MISMATCH');
     previousHash = event.eventHash;
   }
@@ -102,16 +83,8 @@ export async function verifyEvidenceChain(chain) {
 export async function createEvidenceGenesis({ sagaId, planHash, createdAt, plan } = {}) {
   sagaId = nonEmpty(sagaId, 'PACT_EVIDENCE_SAGA_ID_REQUIRED', 256);
   planHash = assertHash(planHash, 'PACT_EVIDENCE_PLAN_HASH_INVALID');
-  const input = normalizeEventInput({
-    type: GENESIS_TYPE,
-    occurredAt: createdAt,
-    payload: { plan: json(plan, 'PACT_EVIDENCE_PLAN_MUST_BE_JSON') }
-  });
-  const event = {
-    sequence: 0,
-    previousHash: null,
-    ...input
-  };
+  const input = normalizeEventInput({ type: GENESIS_TYPE, occurredAt: createdAt, payload: { plan: json(plan, 'PACT_EVIDENCE_PLAN_MUST_BE_JSON') } });
+  const event = { sequence: 0, previousHash: null, ...input };
   event.eventHash = await eventHash({ sagaId, planHash, ...event });
   return { sagaId, planHash, events: [event], headHash: event.eventHash };
 }
@@ -121,18 +94,9 @@ export async function appendEvidence(chain, rawEvent) {
   if (chain.events.length >= MAX_EVENTS) fail('PACT_EVIDENCE_CHAIN_FULL');
   const normalized = validateChainShape(chain);
   const input = normalizeEventInput(rawEvent);
-  const event = {
-    sequence: normalized.events.length,
-    previousHash: normalized.headHash,
-    ...input
-  };
+  const event = { sequence: normalized.events.length, previousHash: normalized.headHash, ...input };
   event.eventHash = await eventHash({ sagaId: normalized.sagaId, planHash: normalized.planHash, ...event });
-  const next = {
-    sagaId: normalized.sagaId,
-    planHash: normalized.planHash,
-    events: [...normalized.events, event],
-    headHash: event.eventHash
-  };
+  const next = { sagaId: normalized.sagaId, planHash: normalized.planHash, events: [...normalized.events, event], headHash: event.eventHash };
   await verifyEvidenceChain(next);
   return next;
 }
@@ -147,16 +111,13 @@ export async function buildSagaEvidenceChain({
   approvedAt,
   executionAuthorization,
   executionAuthorizedAt,
+  providerAssuranceApproval = [],
+  providerAssuranceCommit = [],
   recoveryDecisions = [],
   execution
 } = {}) {
   if (!execution || typeof execution !== 'object' || !Array.isArray(execution.steps)) fail('PACT_EVIDENCE_EXECUTION_REQUIRED');
-  let chain = await createEvidenceGenesis({
-    sagaId,
-    planHash,
-    createdAt,
-    plan: { steps: json(planSteps, 'PACT_EVIDENCE_PLAN_MUST_BE_JSON') }
-  });
+  let chain = await createEvidenceGenesis({ sagaId, planHash, createdAt, plan: { steps: json(planSteps, 'PACT_EVIDENCE_PLAN_MUST_BE_JSON') } });
 
   if (approvalBinding != null) {
     chain = await appendEvidence(chain, {
@@ -167,17 +128,31 @@ export async function buildSagaEvidenceChain({
     });
   }
 
+  if (Array.isArray(providerAssuranceApproval) && providerAssuranceApproval.length) {
+    chain = await appendEvidence(chain, {
+      type: 'PROVIDER_ASSURANCE_APPROVED',
+      occurredAt: timestamp(approvedAt, 'PACT_EVIDENCE_APPROVED_AT_REQUIRED'),
+      actor: approvalClaims ?? null,
+      payload: { assessments: json(providerAssuranceApproval, 'PACT_EVIDENCE_PROVIDER_ASSURANCE_MUST_BE_JSON') }
+    });
+  }
+
   if (executionAuthorization != null) {
     const authorization = json(executionAuthorization, 'PACT_EVIDENCE_EXECUTION_AUTHORIZATION_MUST_BE_JSON');
     chain = await appendEvidence(chain, {
       type: 'EXECUTION_AUTHORIZED',
       occurredAt: timestamp(executionAuthorizedAt, 'PACT_EVIDENCE_EXECUTION_AUTHORIZED_AT_REQUIRED'),
       actor: approvalClaims ?? null,
-      payload: {
-        authorizationId: authorization.authorizationId ?? null,
-        idempotencyKey: authorization.idempotencyKey ?? null,
-        authorizedAt: authorization.authorizedAt ?? executionAuthorizedAt
-      }
+      payload: { authorizationId: authorization.authorizationId ?? null, idempotencyKey: authorization.idempotencyKey ?? null, authorizedAt: authorization.authorizedAt ?? executionAuthorizedAt }
+    });
+  }
+
+  if (Array.isArray(providerAssuranceCommit) && providerAssuranceCommit.length) {
+    chain = await appendEvidence(chain, {
+      type: 'PROVIDER_ASSURANCE_COMMIT',
+      occurredAt: timestamp(executionAuthorizedAt, 'PACT_EVIDENCE_EXECUTION_AUTHORIZED_AT_REQUIRED'),
+      actor: approvalClaims ?? null,
+      payload: { assessments: json(providerAssuranceCommit, 'PACT_EVIDENCE_PROVIDER_ASSURANCE_MUST_BE_JSON') }
     });
   }
 
@@ -223,11 +198,7 @@ export async function buildSagaEvidenceChain({
   chain = await appendEvidence(chain, {
     type: 'SAGA_TERMINAL',
     occurredAt: timestamp(execution.committedAt ?? execution.updatedAt, 'PACT_EVIDENCE_TERMINAL_TIME_REQUIRED'),
-    payload: {
-      state: execution.state,
-      leaseGeneration: execution.leaseGeneration ?? 0,
-      failure: execution.failure ?? null
-    }
+    payload: { state: execution.state, leaseGeneration: execution.leaseGeneration ?? 0, failure: execution.failure ?? null }
   });
 
   await verifyEvidenceChain(chain);

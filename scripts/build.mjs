@@ -10,9 +10,7 @@ await mkdir(dist, { recursive: true });
 
 function stripExports(source) { return source.replace(/^export\s+/gm, ''); }
 function stripImports(source) { return source.replace(/^import\s+.*?;\s*$/gm, ''); }
-function moduleScope(source, names) {
-  return `const { ${names.join(', ')} } = (() => {\n${stripExports(source)}\nreturn { ${names.join(', ')} };\n})();\n`;
-}
+function moduleScope(source, names) { return `const { ${names.join(', ')} } = (() => {\n${stripExports(source)}\nreturn { ${names.join(', ')} };\n})();\n`; }
 
 const source = async file => readFile(path.join(root, file), 'utf8');
 const bundles = {
@@ -30,96 +28,31 @@ const bundles = {
 for (const [name, contents] of Object.entries(bundles)) await writeFile(path.join(dist, name), contents);
 await cp(path.join(root, 'src/styles.css'), path.join(dist, 'styles.css'));
 
-// Ship source-compatible ESM modules as the reusable SDK. Keeping the module
-// graph intact avoids hidden globals and lets consumers import only what they use.
 await mkdir(path.join(dist, 'sdk'), { recursive: true });
-for (const file of ['engine.js', 'adapter.js', 'runtime.js', 'authority.js', 'api-authority.js', 'redis-store.js', 'canonical-store.js', 'durable-state.js', 'saga.js', 'saga-protocol.js', 'saga-observability.js', 'evidence-chain.js', 'rest-resource.js', 'provider-registry.js', 'provider-qualification.js', 'release-lock.js', 'release-diff.js', 'release-registry.js', 'release-drift.js', 'release-gate.js', 'release-attribution.js', 'release-discover.js', 'trace-corpus.js', 'replay.js', 'release-bisect.js', 'release-canary.js', 'release-effects.js', 'release-recovery.js', 'fleet-graph.js', 'http.js', 'http-handler.js', 'server-approval.js', 'server-runtime.js', 'provenance.js', 'webmcp.js', 'agent-bridge.js', 'persistence.js', 'orchestrator.js']) {
-  await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
-}
+for (const file of [
+  'engine.js','adapter.js','runtime.js','authority.js','api-authority.js','redis-store.js','canonical-store.js','durable-state.js',
+  'saga.js','saga-protocol.js','saga-observability.js','evidence-chain.js','rest-resource.js','provider-registry.js','provider-qualification.js','provider-qualification-suite.js','provider-qualification-report.js',
+  'provider-driver.js','provider-assurance.js','provider-policy.js',
+  'release-lock.js','release-diff.js','release-registry.js','release-drift.js','release-gate.js','release-attribution.js','release-discover.js','trace-corpus.js','replay.js','release-bisect.js','release-canary.js','release-effects.js','release-recovery.js','fleet-graph.js',
+  'http.js','http-handler.js','server-approval.js','server-runtime.js','provenance.js','webmcp.js','agent-bridge.js','persistence.js','orchestrator.js'
+]) await cp(path.join(root, 'src', file), path.join(dist, 'sdk', file));
 
-const scriptMap = new Map([
-  ['/src/site.js', '/site.bundle.js'],
-  ['/src/main.js', '/workspace.bundle.js'],
-  ['/src/playground.js', '/playground.bundle.js'],
-  ['/src/demo.js', '/demo.bundle.js']
-]);
-const dependencyScripts = {
-  '/workspace.bundle.js': ['/engine.bundle.js','/persistence.bundle.js','/webmcp.bundle.js'],
-  '/playground.bundle.js': ['/http.bundle.js'],
-  '/demo.bundle.js': ['/engine.bundle.js','/persistence.bundle.js','/orchestrator.bundle.js']
-};
-function transformHtml(html) {
-  html = html.replaceAll('href="/src/styles.css"', 'href="/styles.css"');
-  for (const [from,to] of scriptMap) html = html.replaceAll(`src="${from}"`, `src="${to}"`).replaceAll('type="module" ', '');
-  for (const [entry,deps] of Object.entries(dependencyScripts)) {
-    const needle = `<script src="${entry}"></script>`;
-    if (html.includes(needle)) html = html.replace(needle, [...deps.map(src=>`<script src="${src}"></script>`), needle].join(''));
-  }
-  return html;
-}
+const providersDir=path.join(dist,'sdk','providers');
+await mkdir(providersDir,{recursive:true});
+for(const file of ['etag-json.js','kubernetes-resource.js','idempotent-command.js','versioned-command.js']) await cp(path.join(root,'src','providers',file),path.join(providersDir,file));
 
-const routes = [
-  { src: 'index.html', out: 'index.html' },
-  { src: 'pages/demo.html', out: 'demo/index.html' },
-  { src: 'pages/workspace.html', out: 'workspace/index.html' },
-  { src: 'pages/how-it-works.html', out: 'how-it-works/index.html' },
-  { src: 'pages/security.html', out: 'security/index.html' },
-  { src: 'pages/developers.html', out: 'developers/index.html' }
-];
-for (const route of routes) {
-  const out = path.join(dist, route.out);
-  await mkdir(path.dirname(out), { recursive: true });
-  await writeFile(out, transformHtml(await source(route.src)));
-}
-for (const file of ['vercel.json', 'README.md', 'LICENSE', 'pact-manifest.json']) await cp(path.join(root, file), path.join(dist, file));
-await mkdir(path.join(dist, 'schema'), { recursive: true });
-for (const file of ['pact-manifest.schema.json', 'pact-adapter.schema.json', 'pact-lock.schema.json']) {
-  await cp(path.join(root, `schema/${file}`), path.join(dist, `schema/${file}`));
-}
-await mkdir(path.join(dist, 'docs'), { recursive: true });
-for (const file of ['agent-bridges.md', 'rest-provider.md', 'release-integrity.md']) {
-  await cp(path.join(root, `docs/${file}`), path.join(dist, `docs/${file}`));
-}
-await mkdir(path.join(dist, 'types'), { recursive: true });
-await cp(path.join(root, 'types/release-integrity.d.ts'), path.join(dist, 'types/release-integrity.d.ts'));
+const scriptMap = new Map([['/src/site.js','/site.bundle.js'],['/src/main.js','/workspace.bundle.js'],['/src/playground.js','/playground.bundle.js'],['/src/demo.js','/demo.bundle.js']]);
+const dependencyScripts = {'/workspace.bundle.js':['/engine.bundle.js','/persistence.bundle.js','/webmcp.bundle.js'],'/playground.bundle.js':['/http.bundle.js'],'/demo.bundle.js':['/engine.bundle.js','/persistence.bundle.js','/orchestrator.bundle.js']};
+function transformHtml(html) { html=html.replaceAll('href="/src/styles.css"','href="/styles.css"'); for(const[from,to]of scriptMap)html=html.replaceAll(`src="${from}"`,`src="${to}"`).replaceAll('type="module" ',''); for(const[entry,deps]of Object.entries(dependencyScripts)){const needle=`<script src="${entry}"></script>`;if(html.includes(needle))html=html.replace(needle,[...deps.map(src=>`<script src="${src}"></script>`),needle].join(''))} return html; }
 
-const provenance = describeReleaseProvenance(process.env);
-await writeFile(path.join(dist, 'release-provenance.json'), JSON.stringify({
-  schema: 1,
-  sourceCommit: provenance.sourceCommit,
-  sourceRepository: 'https://github.com/dharan1007/pact',
-  buildContract: 'pact-release-v1',
-  commitProvenance: provenance.commitProvenance,
-  provenanceSources: provenance.sources
-}, null, 2) + '\n');
+const routes=[{src:'index.html',out:'index.html'},{src:'pages/demo.html',out:'demo/index.html'},{src:'pages/workspace.html',out:'workspace/index.html'},{src:'pages/how-it-works.html',out:'how-it-works/index.html'},{src:'pages/security.html',out:'security/index.html'},{src:'pages/developers.html',out:'developers/index.html'}];
+for(const route of routes){const out=path.join(dist,route.out);await mkdir(path.dirname(out),{recursive:true});await writeFile(out,transformHtml(await source(route.src)))}
+for(const file of ['vercel.json','README.md','LICENSE','pact-manifest.json'])await cp(path.join(root,file),path.join(dist,file));
+await mkdir(path.join(dist,'schema'),{recursive:true});for(const file of ['pact-manifest.schema.json','pact-adapter.schema.json','pact-lock.schema.json'])await cp(path.join(root,`schema/${file}`),path.join(dist,`schema/${file}`));
+await mkdir(path.join(dist,'docs'),{recursive:true});for(const file of ['agent-bridges.md','rest-provider.md','release-integrity.md'])await cp(path.join(root,`docs/${file}`),path.join(dist,`docs/${file}`));
+await mkdir(path.join(dist,'types'),{recursive:true});await cp(path.join(root,'types/release-integrity.d.ts'),path.join(dist,'types/release-integrity.d.ts'));
 
-const releasePackage = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-await writeFile(path.join(dist, 'sbom.cdx.json'), JSON.stringify({
-  bomFormat: 'CycloneDX',
-  specVersion: '1.5',
-  version: 1,
-  metadata: {
-    component: {
-      type: 'application',
-      name: releasePackage.name,
-      version: releasePackage.version,
-      description: 'PACT release bundle. This package ships zero runtime dependencies; execution requires Node.js 22+.'
-    }
-  },
-  components: []
-}, null, 2) + '\n');
-
-async function walk(dir, prefix='') {
-  const out=[];
-  for (const entry of await readdir(dir, { withFileTypes:true })) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) out.push(...await walk(path.join(dir,entry.name), rel));
-    else if (entry.name !== 'release-manifest.json') out.push(rel);
-  }
-  return out.sort();
-}
-const files = await walk(dist);
-const hashes = {};
-for (const file of files) hashes[file] = createHash('sha256').update(await readFile(path.join(dist,file))).digest('hex');
-await writeFile(path.join(dist,'release-manifest.json'), JSON.stringify({ schema:11, files:hashes }, null, 2)+'\n');
-console.log(`Built ${files.length + 1} release files into dist/`);
+const provenance=describeReleaseProvenance(process.env);await writeFile(path.join(dist,'release-provenance.json'),JSON.stringify({schema:1,sourceCommit:provenance.sourceCommit,sourceRepository:'https://github.com/dharan1007/pact',buildContract:'pact-release-v1',commitProvenance:provenance.commitProvenance,provenanceSources:provenance.sources},null,2)+'\n');
+const releasePackage=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));await writeFile(path.join(dist,'sbom.cdx.json'),JSON.stringify({bomFormat:'CycloneDX',specVersion:'1.5',version:1,metadata:{component:{type:'application',name:releasePackage.name,version:releasePackage.version,description:'PACT release bundle. This package ships zero runtime dependencies; execution requires Node.js 22+.'}},components:[]},null,2)+'\n');
+async function walk(dir,prefix=''){const out=[];for(const entry of await readdir(dir,{withFileTypes:true})){const rel=prefix?`${prefix}/${entry.name}`:entry.name;if(entry.isDirectory())out.push(...await walk(path.join(dir,entry.name),rel));else if(entry.name!=='release-manifest.json')out.push(rel)}return out.sort()}
+const files=await walk(dist),hashes={};for(const file of files)hashes[file]=createHash('sha256').update(await readFile(path.join(dist,file))).digest('hex');await writeFile(path.join(dist,'release-manifest.json'),JSON.stringify({schema:11,files:hashes},null,2)+'\n');console.log(`Built ${files.length+1} release files into dist/`);
