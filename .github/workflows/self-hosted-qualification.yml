@@ -35,9 +35,7 @@ jobs:
           main="$(git rev-parse origin/main)"
           test "$head" = "$main" || { echo "PACT_QUALIFICATION_NOT_CURRENT_MAIN"; exit 1; }
           requested='${{ inputs.sha }}'
-          if [ -n "$requested" ]; then
-            test "$requested" = "$head" || { echo "PACT_QUALIFICATION_SHA_MISMATCH"; exit 1; }
-          fi
+          if [ -n "$requested" ]; then test "$requested" = "$head" || { echo "PACT_QUALIFICATION_SHA_MISMATCH"; exit 1; }; fi
           echo "PACT_SOURCE_COMMIT=$head" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -87,6 +85,48 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  provider-corpus:
+    name: self-hosted real provider corpus
+    needs: verify
+    runs-on: [self-hosted, Linux, X64, production-ci]
+    timeout-minutes: 180
+    env:
+      PACT_PROVIDER_QUALIFICATION_CONFIG: ${{ secrets.PACT_PROVIDER_QUALIFICATION_CONFIG }}
+      PACT_PROVIDER_QUALIFICATION_RUNS: '500'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 0
+      - name: Bind real-provider corpus to exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          head="$(git rev-parse HEAD)"
+          main="$(git rev-parse origin/main)"
+          test "$head" = "$main" || { echo "PACT_PROVIDER_CORPUS_NOT_CURRENT_MAIN"; exit 1; }
+          requested='${{ inputs.sha }}'
+          if [ -n "$requested" ]; then test "$requested" = "$head" || { echo "PACT_PROVIDER_CORPUS_SHA_MISMATCH"; exit 1; }; fi
+          echo "PACT_SOURCE_COMMIT=$head" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Require real disposable provider targets
+        shell: bash
+        run: test -n "${PACT_PROVIDER_QUALIFICATION_CONFIG:-}" || { echo "PACT_PROVIDER_QUALIFICATION_CONFIG_REQUIRED"; exit 1; }
+      - name: Execute real four-family provider corpus
+        run: node scripts/run-real-provider-corpus.mjs
+      - name: Upload real provider evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pact-provider-corpus-${{ github.sha }}
+          path: artifacts/provider-qualification/
+          retention-days: 90
+          if-no-files-found: error
+
   codeql:
     name: self-hosted qualification codeql
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -111,9 +151,7 @@ jobs:
           main="$(git rev-parse origin/main)"
           test "$head" = "$main" || { echo "PACT_CODEQL_NOT_CURRENT_MAIN"; exit 1; }
           requested='${{ inputs.sha }}'
-          if [ -n "$requested" ]; then
-            test "$requested" = "$head" || { echo "PACT_CODEQL_SHA_MISMATCH"; exit 1; }
-          fi
+          if [ -n "$requested" ]; then test "$requested" = "$head" || { echo "PACT_CODEQL_SHA_MISMATCH"; exit 1; }; fi
       - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v3
         with:
           languages: javascript-typescript
