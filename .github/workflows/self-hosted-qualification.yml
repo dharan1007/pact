@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   verify:
+    name: self-hosted qualification verify
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: [self-hosted, Linux, X64, production-ci]
     timeout-minutes: 45
@@ -71,8 +72,8 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${VERCEL_TOKEN:-}" || { echo "PACT_VERCEL_TOKEN_REQUIRED"; exit 1; }
-          npx --yes vercel@latest pull --yes --environment=preview --token "$VERCEL_TOKEN"
-          PACT_SOURCE_COMMIT="$PACT_SOURCE_COMMIT" npx --yes vercel@latest build --token "$VERCEL_TOKEN"
+          npx --yes vercel@59.11.7 pull --yes --environment=preview --token "$VERCEL_TOKEN"
+          PACT_SOURCE_COMMIT="$PACT_SOURCE_COMMIT" npx --yes vercel@59.11.7 build --token "$VERCEL_TOKEN"
           PACT_SOURCE_COMMIT="$PACT_SOURCE_COMMIT" npm run verify:prebuilt
       - name: Upload verification evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -87,6 +88,7 @@ jobs:
           if-no-files-found: error
 
   codeql:
+    name: self-hosted qualification codeql
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: [self-hosted, Linux, X64, production-ci]
     timeout-minutes: 45
