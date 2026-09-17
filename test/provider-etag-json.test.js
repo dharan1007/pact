@@ -97,24 +97,23 @@ test('plans, conditionally commits and independently verifies a resource mutatio
   assert.equal(await driver.verify({plan,observed:after}),true);
 });
 
-test('configured remote fencing is carried by the actual conditional mutation and stale generations are rejected remotely',async()=>{
-  const provider=providerHarness({fenceHeader:'x-pact-fence'});
-  const driver=makeDriver(provider,{remoteFencing:{mode:'monotonic-header',header:'x-pact-fence'}});
+test('organizational remote fencing is carried by the actual conditional mutation and stale generations are rejected remotely',async()=>{
+  const provider=providerHarness({fenceHeader:'x-pact-fence-generation'});
+  const driver=makeDriver(provider,{remoteFencing:true});
   assert.equal(driver.describe().capabilities.remoteFencing,true);
   let observed=await driver.read();
   let plan=await driver.plan({intent:{path:['enabled'],value:true},observed});
   await driver.commit({plan,authorization:{authorizationId:'fenced-1'},idempotencyKey:'fenced-1',fence:{generation:10,ownerId:'worker-a'}});
   const firstWrite=provider.requests.find(item=>item.method==='PUT');
-  assert.equal(firstWrite.headers['x-pact-fence'],'10');
+  assert.equal(firstWrite.headers['x-pact-fence-generation'],'10');
   observed=await driver.read();
   plan=await driver.plan({intent:{path:['enabled'],value:false},observed});
   await assert.rejects(()=>driver.commit({plan,authorization:{authorizationId:'fenced-2'},idempotencyKey:'fenced-2',fence:{generation:9,ownerId:'worker-b'}}),/PACT_REST_PROVIDER_REJECTED|PACT_REST_STALE_PROVIDER_STATE/);
   assert.equal(provider.writes(),1);
 });
 
-test('remote-fencing capability cannot be declared without a concrete safe fence header',()=>{
+test('custom remote-fencing headers are rejected so organizational providers implement one stable protocol',()=>{
   const provider=providerHarness();
-  assert.throws(()=>makeDriver(provider,{remoteFencing:true}),/PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID/);
   assert.throws(()=>makeDriver(provider,{remoteFencing:{mode:'monotonic-header',header:'authorization'}}),/PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID/);
 });
 
