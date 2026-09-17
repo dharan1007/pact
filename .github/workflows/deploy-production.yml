@@ -83,7 +83,7 @@ jobs:
           git fetch --no-tags origin main
           test "${PACT_SOURCE_COMMIT}" = "$(git rev-parse FETCH_HEAD)" || { echo "PACT_RELEASE_NOT_CURRENT_MAIN_HEAD" >&2; exit 1; }
 
-      - name: Require exact-SHA self-hosted verification and CodeQL
+      - name: Require exact-SHA self-hosted verification, real provider corpus and CodeQL
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -91,8 +91,10 @@ jobs:
           set -euo pipefail
           checks="$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${PACT_SOURCE_COMMIT}/check-runs")"
           verify_ok="$(jq '[.check_runs[] | select(.name == "self-hosted qualification verify" and .conclusion == "success")] | length' <<<"$checks")"
+          corpus_ok="$(jq '[.check_runs[] | select(.name == "self-hosted real provider corpus" and .conclusion == "success")] | length' <<<"$checks")"
           codeql_ok="$(jq '[.check_runs[] | select(.name == "self-hosted qualification codeql" and .conclusion == "success")] | length' <<<"$checks")"
           test "$verify_ok" -ge 1 || { echo "PACT_SELF_HOSTED_QUALIFICATION_NOT_GREEN" >&2; exit 1; }
+          test "$corpus_ok" -ge 1 || { echo "PACT_REAL_PROVIDER_CORPUS_NOT_GREEN" >&2; exit 1; }
           test "$codeql_ok" -ge 1 || { echo "PACT_SELF_HOSTED_CODEQL_NOT_GREEN" >&2; exit 1; }
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
