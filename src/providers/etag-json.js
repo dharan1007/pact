@@ -7,6 +7,8 @@ const fail=code=>{throw new Error(code)};
 const clone=value=>value===undefined?undefined:structuredClone(value);
 const isObject=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 const STRONG_ETAG=/^"[^"\x00-\x20\x7f]+"$/;
+const SAFE_HEADER=/^[a-z][a-z0-9-]{0,127}$/;
+const FORBIDDEN_HEADERS=new Set(['authorization','cookie','set-cookie','if-match','idempotency-key','x-pact-idempotency-key','x-pact-authorization']);
 
 function nonEmpty(value,code,max=2048){
   if(typeof value!=='string'||!value.trim())fail(code);
@@ -20,6 +22,17 @@ function configDigest(value){
 }
 
 function same(left,right){return canonicalStringify(left)===canonicalStringify(right)};
+function normalizeRemoteFencing(value){
+  if(value==null||value===false)return null;
+  if(!isObject(value)||value.mode!=='monotonic-header')fail('PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID');
+  const header=nonEmpty(value.header,'PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID',128).toLowerCase();
+  if(!SAFE_HEADER.test(header)||FORBIDDEN_HEADERS.has(header))fail('PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID');
+  return Object.freeze({mode:'monotonic-header',header});
+}
+function fenceGeneration(fence){
+  if(!isObject(fence)||!Number.isSafeInteger(fence.generation)||fence.generation<1||typeof fence.ownerId!=='string'||!fence.ownerId.trim())fail('PACT_ETAG_DRIVER_REMOTE_FENCE_REQUIRED');
+  return fence.generation;
+}
 
 function applyEffects(current,effects){
   const next=clone(current);
@@ -70,7 +83,7 @@ export function createEtagJsonDriver({
   headers={},
   method='PUT',
   conditionalWrite='conditional-write-unknown-strength',
-  remoteFencing=false,
+  remoteFencing=null,
   maxRetries=12
 }={}){
   id=nonEmpty(id,'PACT_ETAG_DRIVER_ID_REQUIRED',128);
@@ -80,13 +93,19 @@ export function createEtagJsonDriver({
   atomicDomain=nonEmpty(atomicDomain,'PACT_ETAG_DRIVER_ATOMIC_DOMAIN_REQUIRED',256);
   if(typeof fetchImpl!=='function')fail('PACT_ETAG_DRIVER_FETCH_REQUIRED');
   if(!['strong-validator','conditional-write-unknown-strength'].includes(conditionalWrite))fail('PACT_ETAG_DRIVER_CONDITIONAL_WRITE_INVALID');
-  if(typeof remoteFencing!=='boolean')fail('PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID');
+  const fencing=normalizeRemoteFencing(remoteFencing);
 
   const strongRevision=conditionalWrite==='strong-validator';
   const qualifiedFetch=strongEtagFetch(fetchImpl,strongRevision);
-  const bridge=createPactRestResourceBridge({store,key:resourceKey,baseUrl,resourcePath,fetchImpl:qualifiedFetch,headers,method,maxRetries});
+  const createBridge=(extraHeaders={})=>createPactRestResourceBridge({store,key:resourceKey,baseUrl,resourcePath,fetchImpl:qualifiedFetch,headers:{...headers,...extraHeaders},method,maxRetries});
+  const bridge=createBridge();
+  const bridgeForFence=fence=>{
+    if(!fencing)return bridge;
+    const generation=fenceGeneration(fence);
+    return createBridge({[fencing.header]:String(generation)});
+  };
   const adapter=createPactJsonResourceAdapter({id,version});
-  const digest=configDigest({driver:'etag-json',id,version,providerId,resourceKey,atomicDomain,baseUrl,resourcePath,method:String(method).toUpperCase(),conditionalWrite,remoteFencing});
+  const digest=configDigest({driver:'etag-json',id,version,providerId,resourceKey,atomicDomain,baseUrl,resourcePath,method:String(method).toUpperCase(),conditionalWrite,remoteFencing:fencing});
 
   const driver={
     id,
@@ -106,7 +125,7 @@ export function createEtagJsonDriver({
           strongRevision,
           reconciliation:true,
           stateReplacement:true,
-          remoteFencing
+          remoteFencing:Boolean(fencing)
         })
       });
     },
@@ -137,9 +156,9 @@ export function createEtagJsonDriver({
       if(!isObject(plan?.before)||!same(state,plan.before))fail('PACT_ETAG_DRIVER_PRECONDITION_MISMATCH');
       return {kind:'etag-json',canonicalVersion:state.version};
     },
-    async commit({plan,authorization,idempotencyKey}={}){
+    async commit({plan,authorization,idempotencyKey,fence}={}){
       if(!isObject(plan?.before)||!isObject(plan?.next))fail('PACT_ETAG_DRIVER_PLAN_REQUIRED');
-      return bridge.commit({expectedVersion:plan.before.version,nextState:clone(plan.next),authorization:clone(authorization),idempotencyKey});
+      return bridgeForFence(fence).commit({expectedVersion:plan.before.version,nextState:clone(plan.next),authorization:clone(authorization),idempotencyKey});
     },
     async observe(){
       const state=await bridge.read();
