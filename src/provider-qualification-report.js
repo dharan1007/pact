@@ -3,7 +3,7 @@ import { canonicalStringify } from './engine.js';
 
 const fail=code=>{throw new Error(code)};
 const HASH=/^[a-f0-9]{64}$/;
-export const REQUIRED_PROVIDER_FAMILIES=Object.freeze(['etag-json','kubernetes-resource-version','idempotent-command','versioned-command']);
+export const REQUIRED_PROVIDER_FAMILIES=Object.freeze(['etag-json','kubernetes-resource-version','idempotent-command','explicit-version-command']);
 const REQUIRED_FAMILY_SET=new Set(REQUIRED_PROVIDER_FAMILIES);
 function percentile(values,p){if(!values.length)return null;const sorted=[...values].sort((a,b)=>a-b),index=Math.min(sorted.length-1,Math.max(0,Math.ceil((p/100)*sorted.length)-1));return sorted[index]}
 export function summarizeProviderQualificationCorpus(transactions){
