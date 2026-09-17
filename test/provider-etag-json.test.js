@@ -17,17 +17,25 @@ function response(status,body,etag){
   return {ok:status>=200&&status<300,status,headers:{get(name){return String(name).toLowerCase()==='etag'?(etag??null):null}},async text(){return body==null?'':JSON.stringify(body)}};
 }
 
-function providerHarness({weak=false}={}){
+function providerHarness({weak=false,fenceHeader=null}={}){
   let revision=1;
   let resource={profile:{name:'Ada'},enabled:false};
   let writes=0;
   let loseNext=false;
+  let highestFence=0;
   const requests=[];
   const etag=()=>`${weak?'W/':''}"r${revision}"`;
   const fetchImpl=async (_url,options={})=>{
     const method=String(options.method??'GET').toUpperCase();
     requests.push({method,headers:{...(options.headers??{})},body:options.body});
     if(method==='GET')return response(200,resource,etag());
+    if(fenceHeader){
+      const raw=options.headers?.[fenceHeader];
+      const generation=Number(raw);
+      if(!Number.isSafeInteger(generation)||generation<1)return response(400,{error:'missing-fence'},etag());
+      if(generation<=highestFence)return response(409,{error:'stale-fence'},etag());
+      highestFence=generation;
+    }
     if(options.headers?.['if-match']!==etag())return response(412,{error:'stale'},etag());
     writes+=1;
     resource=JSON.parse(options.body);
@@ -87,6 +95,27 @@ test('plans, conditionally commits and independently verifies a resource mutatio
   assert.equal(write.headers['idempotency-key'],'auth-1');
   const after=await driver.observe({plan});
   assert.equal(await driver.verify({plan,observed:after}),true);
+});
+
+test('configured remote fencing is carried by the actual conditional mutation and stale generations are rejected remotely',async()=>{
+  const provider=providerHarness({fenceHeader:'x-pact-fence'});
+  const driver=makeDriver(provider,{remoteFencing:{mode:'monotonic-header',header:'x-pact-fence'}});
+  assert.equal(driver.describe().capabilities.remoteFencing,true);
+  let observed=await driver.read();
+  let plan=await driver.plan({intent:{path:['enabled'],value:true},observed});
+  await driver.commit({plan,authorization:{authorizationId:'fenced-1'},idempotencyKey:'fenced-1',fence:{generation:10,ownerId:'worker-a'}});
+  const firstWrite=provider.requests.find(item=>item.method==='PUT');
+  assert.equal(firstWrite.headers['x-pact-fence'],'10');
+  observed=await driver.read();
+  plan=await driver.plan({intent:{path:['enabled'],value:false},observed});
+  await assert.rejects(()=>driver.commit({plan,authorization:{authorizationId:'fenced-2'},idempotencyKey:'fenced-2',fence:{generation:9,ownerId:'worker-b'}}),/PACT_REST_PROVIDER_REJECTED|PACT_REST_STALE_PROVIDER_STATE/);
+  assert.equal(provider.writes(),1);
+});
+
+test('remote-fencing capability cannot be declared without a concrete safe fence header',()=>{
+  const provider=providerHarness();
+  assert.throws(()=>makeDriver(provider,{remoteFencing:true}),/PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID/);
+  assert.throws(()=>makeDriver(provider,{remoteFencing:{mode:'monotonic-header',header:'authorization'}}),/PACT_ETAG_DRIVER_REMOTE_FENCING_INVALID/);
 });
 
 test('rejects stale expected state after out-of-band provider drift',async()=>{
