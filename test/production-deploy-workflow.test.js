@@ -31,15 +31,20 @@ test('production deploy accepts manual dispatch or an exact successful self-host
   assert.match(text, /PACT_PRODUCTION_URL:\s*https:\/\/pact-webmcp\.vercel\.app/);
 });
 
-test('production deploy requires exact-SHA self-hosted verification and CodeQL before Vercel', async () => {
+test('production deploy requires exact-SHA self-hosted verification, real provider corpus and CodeQL before Vercel', async () => {
   const text = await workflowText();
   assert.match(text, /self-hosted qualification verify/);
+  assert.match(text, /self-hosted real provider corpus/);
   assert.match(text, /self-hosted qualification codeql/);
   assert.match(text, /PACT_SELF_HOSTED_QUALIFICATION_NOT_GREEN/);
+  assert.match(text, /PACT_REAL_PROVIDER_CORPUS_NOT_GREEN/);
   assert.match(text, /PACT_SELF_HOSTED_CODEQL_NOT_GREEN/);
-  const gate = text.indexOf('PACT_SELF_HOSTED_QUALIFICATION_NOT_GREEN');
+  const verifyGate = text.indexOf('PACT_SELF_HOSTED_QUALIFICATION_NOT_GREEN');
+  const corpusGate = text.indexOf('PACT_REAL_PROVIDER_CORPUS_NOT_GREEN');
+  const codeqlGate = text.indexOf('PACT_SELF_HOSTED_CODEQL_NOT_GREEN');
   const pull = text.indexOf('vercel@59.11.7 pull');
-  assert.ok(gate >= 0 && pull > gate, 'qualification must be checked before any Vercel production operation');
+  assert.ok(verifyGate >= 0 && corpusGate > verifyGate && codeqlGate > corpusGate);
+  assert.ok(pull > codeqlGate, 'all evidence gates must be checked before any Vercel production operation');
 });
 
 test('production deploy pins every third-party GitHub Action to an immutable commit', async () => {
