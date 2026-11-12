@@ -1,0 +1,21 @@
+{
+  "repository": "pact",
+  "contractVersion": "A-G/1",
+  "updatedAt": "2026-09-14",
+  "note": "No PRODUCTION claims without external benchmark + real-workload evidence (Rules A, D, F).",
+  "capabilities": [
+    {
+      "id": "pact-core",
+      "title": "PACT core capability",
+      "status": "EXPERIMENTAL",
+      "evidence": "Implementation + test suite green; external benchmark and real-workload evidence pending.",
+      "nextEvidence": "benchmarks/manifests/pact-reference.json"
+    },
+    {
+      "id": "multi-tenant-hostile-execution",
+      "title": "Shared multi-tenant hostile-code execution",
+      "status": "UNSUPPORTED",
+      "evidence": "Explicit non-goal without process/VM isolation boundary."
+    }
+  ]
+}
