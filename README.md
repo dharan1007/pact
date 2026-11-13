@@ -1,13 +1,11 @@
 # PACT — Agent Release Integrity
 
-PACT is the release-integrity control plane for production AI agents: CAPTURE what
-is running, COMPARE what changed, PROVE it behaves acceptably, CONTROL what
-reaches production. Its transaction engine (preview → approval → one-shot commit
-→ canonical verification → receipt) is the CONTROL subsystem that also recovers
-external effects when a bad release escapes. See [`docs/release-integrity.md`](docs/release-integrity.md)
-for the implemented surface and the explicit not-built list.
-
-PACT is an experimental trust and transaction layer for consequential agent actions. It binds a human-approved semantic plan to canonical state, commits under short-lived authority, verifies the resulting state, and emits a tamper-evident receipt. The same authority can sit behind ordinary HTTPS clients, MCP hosts, or browser WebMCP tools.
+PACT is an experimental release-integrity layer for agent-enabled software. It captures and
+compares release evidence, evaluates configured policies, and supports preview-bound human
+approval, one-shot commit, canonical verification, and a receipt flow. The transaction API
+and integrations are experimental; this README does not establish readiness for any specific
+production system. See [`docs/release-integrity.md`](docs/release-integrity.md) for implemented
+capabilities and the explicit not-built list.
 
 ## What is real in this repository
 
@@ -58,6 +56,8 @@ A crash after canonical write but before transaction-journal completion is expli
 ## Real REST provider mode
 
 The official `/api/pact` runtime can bind a transaction directly to a real JSON REST resource:
+
+The reserved example URL and resource identifiers below are documentation placeholders, not a live provider or account. Replace them with a service and resource you own or are explicitly authorized to modify.
 
 ```text
 PACT_RUNTIME_MODE=rest-json
@@ -163,6 +163,8 @@ The validator rejects prototype-related paths, duplicate effect paths, non-JSON 
 For generic JSON REST resources, `createPactJsonResourceAdapter()` provides a safe path-replacement adapter over `resource.*`. Domain-specific systems should use their own adapter when invariants, commands, partial updates, side effects or verification need richer semantics.
 
 ## Canonical HTTP connector
+
+The reserved host and owner value below are illustrative placeholders only. This snippet is not ready to run against a real service; replace them with an endpoint and resource value you own or are explicitly authorized to modify.
 
 ```js
 import { createPactHttpConnector } from './src/http.js';
