@@ -1,13 +1,11 @@
 # PACT — Agent Release Integrity
 
-PACT is the release-integrity control plane for production AI agents: CAPTURE what
-is running, COMPARE what changed, PROVE it behaves acceptably, CONTROL what
-reaches production. Its transaction engine (preview → approval → one-shot commit
-→ canonical verification → receipt) is the CONTROL subsystem that also recovers
-external effects when a bad release escapes. See [`docs/release-integrity.md`](docs/release-integrity.md)
-for the implemented surface and the explicit not-built list.
-
-PACT is an experimental trust and transaction layer for consequential agent actions. It binds a human-approved semantic plan to canonical state, commits under short-lived authority, verifies the resulting state, and emits a tamper-evident receipt. The same authority can sit behind ordinary HTTPS clients, MCP hosts, or browser WebMCP tools.
+PACT is an experimental release-integrity layer for agent-enabled software. It captures and
+compares release evidence, evaluates configured policies, and supports preview-bound human
+approval, one-shot commit, canonical verification, and a receipt flow. The transaction API
+and integrations are experimental; this README does not establish readiness for any specific
+production system. See [`docs/release-integrity.md`](docs/release-integrity.md) for implemented
+capabilities and the explicit not-built list.
 
 ## What is real in this repository
 
