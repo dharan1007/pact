@@ -59,6 +59,8 @@ A crash after canonical write but before transaction-journal completion is expli
 
 The official `/api/pact` runtime can bind a transaction directly to a real JSON REST resource:
 
+The reserved example URL and resource identifiers below are documentation placeholders, not a live provider or account. Replace them with a service and resource you own or are explicitly authorized to modify.
+
 ```text
 PACT_RUNTIME_MODE=rest-json
 PACT_REST_BASE_URL=https://api.example.com
@@ -163,6 +165,8 @@ The validator rejects prototype-related paths, duplicate effect paths, non-JSON 
 For generic JSON REST resources, `createPactJsonResourceAdapter()` provides a safe path-replacement adapter over `resource.*`. Domain-specific systems should use their own adapter when invariants, commands, partial updates, side effects or verification need richer semantics.
 
 ## Canonical HTTP connector
+
+The reserved host and owner value below are illustrative placeholders only. This snippet is not ready to run against a real service; replace them with an endpoint and resource value you own or are explicitly authorized to modify.
 
 ```js
 import { createPactHttpConnector } from './src/http.js';
